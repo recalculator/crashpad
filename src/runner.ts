@@ -4,7 +4,7 @@ import { loadFixtures, type Fixture } from "./fixtures.ts";
 import { planMigrations, type MigrationPlan } from "./migrations.ts";
 import { compareColumns, compareRows, dropIgnored } from "./compare.ts";
 import { PgServer, type Catalog, type DbError, type Outcome, type PgSession, type QueryResult } from "./db/postgres.ts";
-import { ensureParser, lineCol } from "./sql/parser.ts";
+import { ensureParser, lineCol, splitScript } from "./sql/parser.ts";
 import type { Source } from "./source.ts";
 import { PathError } from "./paths.ts";
 import { VERSION } from "./version.ts";
@@ -67,6 +67,12 @@ function scriptError(err: DbError, path: string, sql: string): ReportedError {
 
 function location(f: Fixture | undefined): SourceLocation | null {
   return f ? { kind: f.origin.kind, path: f.origin.path, line: f.origin.line } : null;
+}
+
+/** Run a schema/seed/migration script, statement by statement when possible. */
+async function runScript(session: PgSession, sql: string, timeoutMs: number): Promise<Outcome<null>> {
+  const parts = splitScript(sql);
+  return parts ? session.runStatements(parts, timeoutMs) : session.runScript(sql, timeoutMs);
 }
 
 interface SideRun {
@@ -360,7 +366,7 @@ export async function runChecks(input: RunInput): Promise<RunResult> {
       ...plan.baseline.map((m) => ({ path: m.path, sql: m.sql })),
     ];
     for (const s of scripts) {
-      const r = await baseSession.runScript(s.sql, limits.migrationTimeoutMs);
+      const r = await runScript(baseSession, s.sql, limits.migrationTimeoutMs);
       if (!r.ok) {
         const e = scriptError(r.error, s.path, s.sql);
         problems.push({
@@ -387,7 +393,7 @@ export async function runChecks(input: RunInput): Promise<RunResult> {
       }
       log(`applying ${m.path}`);
       const t = Date.now();
-      const r = await candSession.runScript(m.sql, limits.migrationTimeoutMs);
+      const r = await runScript(candSession, m.sql, limits.migrationTimeoutMs);
       if (r.ok) newMigrations.push({ file: m.path, status: "applied", durationMs: Date.now() - t });
       else {
         migrationFailed = true;

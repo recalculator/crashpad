@@ -2,7 +2,8 @@ import path from "node:path";
 import { loadProject, ConfigError } from "../config.ts";
 import { loadFixtures } from "../fixtures.ts";
 import { repoRoot } from "../git.ts";
-import { normalizeRepoPath, PathError } from "../paths.ts";
+import { PathError } from "../paths.ts";
+import { projectDirFor } from "../context.ts";
 import { FsSource } from "../source.ts";
 import { ensureParser } from "../sql/parser.ts";
 import type { Values } from "../cli.ts";
@@ -11,7 +12,7 @@ import type { Values } from "../cli.ts";
 export async function cmdValidate(v: Values, cwd: string): Promise<number> {
   await ensureParser();
   const root = await repoRoot(cwd).catch(() => cwd);
-  const projectDir = normalizeRepoPath(v.project ?? (path.relative(root, cwd) || "."), "project directory");
+  const projectDir = projectDirFor(root, cwd, v.project);
   const source = new FsSource(root);
   try {
     const project = await loadProject(source, projectDir);

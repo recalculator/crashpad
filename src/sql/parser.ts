@@ -140,3 +140,27 @@ export function firstTokenOffset(sql: string): number {
     return 0;
   }
 }
+
+/** Statements that cannot run inside a transaction block or that manage transactions themselves. */
+const NON_TRANSACTIONAL = new Set(["TransactionStmt", "VacuumStmt", "CreatedbStmt", "DropdbStmt", "AlterSystemStmt", "CreateTableSpaceStmt", "DropTableSpaceStmt", "ReindexStmt", "ClusterStmt"]);
+
+/**
+ * Split a script into statements for per-statement execution, or return null when it
+ * must run as one unit (it does not parse, controls transactions, or uses CONCURRENTLY).
+ */
+export function splitScript(sql: string): Array<{ text: string; start: number; firstToken: number }> | null {
+  let stmts: ParsedStatement[];
+  try {
+    stmts = parseStatements(sql);
+  } catch {
+    return null;
+  }
+  for (const s of stmts) {
+    if (NON_TRANSACTIONAL.has(s.kind)) return null;
+    if ((s.kind === "IndexStmt" || s.kind === "DropStmt") && s.node.concurrent) return null;
+  }
+  return stmts.map((s) => {
+    const text = sql.slice(s.start, s.end);
+    return { text, start: s.start, firstToken: s.start + firstTokenOffset(text) };
+  });
+}

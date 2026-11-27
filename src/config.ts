@@ -19,7 +19,7 @@ export const LimitsSchema = z
     maxRows: z.number().int().positive().max(1_000_000).default(1000),
     /** Per-statement deadline for checks. */
     statementTimeoutMs: z.number().int().positive().max(600_000).default(5000),
-    /** Per-file deadline for schema, seed, and migration scripts. */
+    /** Per-statement deadline for schema, seed, and migration scripts. */
     migrationTimeoutMs: z.number().int().positive().max(3_600_000).default(60_000),
     /** Deadline for the whole run. Checks not started before it are reported as not run. */
     totalTimeoutMs: z.number().int().positive().max(7_200_000).default(300_000),

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { git, repoRoot, resolveCommit } from "./git.ts";
 import { normalizeRepoPath } from "./paths.ts";
@@ -27,9 +28,17 @@ export function databaseUrl(explicit?: string): string {
   return explicit ?? process.env.CRASHPAD_DATABASE_URL ?? process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
 }
 
+/** The project directory relative to the repo root: explicit, or inferred from cwd. */
+export function projectDirFor(root: string, cwd: string, explicit?: string): string {
+  if (explicit) return normalizeRepoPath(explicit, "project directory");
+  // git reports the resolved root (e.g. /private/var on macOS), so resolve cwd too.
+  const rel = path.relative(fs.realpathSync(root), fs.realpathSync(cwd));
+  return normalizeRepoPath(rel || ".", "project directory");
+}
+
 export async function resolveContext(opts: ContextOptions): Promise<RunContext> {
   const root = await repoRoot(opts.cwd);
-  const projectDir = normalizeRepoPath(opts.project ?? (path.relative(root, opts.cwd) || "."), "project directory");
+  const projectDir = projectDirFor(root, opts.cwd, opts.project);
   const baseCommit = await resolveCommit(root, opts.base);
   let candidate: { label: string; commit: string | null; source: Source };
   if (opts.head) {

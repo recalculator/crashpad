@@ -1,20 +1,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { UsageError, type Values } from "../cli.ts";
-import { databaseUrl } from "../context.ts";
+import { databaseUrl, projectDirFor } from "../context.ts";
 import { PgServer } from "../db/postgres.ts";
 import type { FixPlan } from "../fix/pipeline.ts";
 import { repoRoot } from "../git.ts";
 import { FetchGitHubApi, parseRepo, resolveToken, type GitHubApi } from "../github/client.ts";
 import { publishFixPr, type PublishResult } from "../github/publish.ts";
-import { normalizeRepoPath } from "../paths.ts";
 import { writeFixArtifacts } from "./fix.ts";
 
 export async function cmdFixPr(v: Values, cwd: string, api?: GitHubApi | null): Promise<number> {
   if (!v.repo || !v.branch || !v.base) throw new UsageError("--repo, --branch and --base are required");
   parseRepo(v.repo);
   const root = await repoRoot(cwd);
-  const projectDir = normalizeRepoPath(v.project ?? (path.relative(root, cwd) || "."), "project directory");
+  const projectDir = projectDirFor(root, cwd, v.project);
   const plan = v.plan ? (JSON.parse(await fs.readFile(path.resolve(cwd, v.plan), "utf8")) as FixPlan) : undefined;
   let client: GitHubApi | null = api ?? null;
   if (api === undefined && !v["dry-run"]) {

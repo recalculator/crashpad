@@ -136,6 +136,32 @@ export class PgSession {
     }
   }
 
+  /**
+   * Run pre-split statements of one script inside a single transaction (the same
+   * atomicity as a multi-statement simple query), so a failure can be attributed
+   * to the exact statement. Error positions are made relative to the whole script.
+   */
+  async runStatements(stmts: Array<{ text: string; start: number; firstToken: number }>, timeoutMs: number): Promise<Outcome<null>> {
+    const c = this.client;
+    let current: { start: number; firstToken: number } | null = null;
+    try {
+      await c.query("BEGIN");
+      await c.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`);
+      for (const s of stmts) {
+        current = s;
+        await c.query(s.text);
+      }
+      current = null;
+      await c.query("COMMIT");
+      return { ok: true, value: null };
+    } catch (err) {
+      await c.query("ROLLBACK").catch(() => {});
+      const e = toDbError(err);
+      if (current) e.position = current.start + (e.position ?? current.firstToken - current.start + 1);
+      return { ok: false, error: e };
+    }
+  }
+
   private async columns(fields: Array<{ name: string; dataTypeID: number; dataTypeModifier: number }>): Promise<Column[]> {
     const out: Column[] = [];
     for (const f of fields) {

@@ -63,7 +63,8 @@ export async function publishFixPr(o: PublishOptions): Promise<PublishResult> {
   // 1. The target repository must be the configured remote.
   let remoteUrl: string;
   try {
-    remoteUrl = await gitOut(root, ["remote", "get-url", remote]);
+    // The configured URL (not `remote get-url`, which expands insteadOf rewrites).
+    remoteUrl = await gitOut(root, ["config", "--get", `remote.${remote}.url`]);
   } catch {
     return refused(`remote "${remote}" is not configured`);
   }
