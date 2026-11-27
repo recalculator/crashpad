@@ -1,6 +1,6 @@
 {
   "title": "Healthy change",
-  "story": "Adds a nullable loyalty_tier column, an index, and a new integrity check. Nothing existing should break.",
+  "description": "Adds a nullable loyalty_tier column, an index, and a new integrity check. Nothing existing should break.",
   "mode": "check",
   "expectedExit": 0,
   "addChecks": [

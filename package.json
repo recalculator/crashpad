@@ -19,7 +19,6 @@
     "prepare": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "demo": "node scripts/demo.ts",
     "crashpad": "node bin/crashpad.js"
   },
   "dependencies": {

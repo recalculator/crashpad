@@ -1,6 +1,6 @@
 {
   "title": "Query-only change (no migration)",
-  "story": "A developer edits the checkout summary SQL to add shipping, assuming an orders.shipping_total column exists. There is no migration.",
+  "description": "A developer edits the checkout summary SQL to add shipping, assuming an orders.shipping_total column exists. There is no migration.",
   "mode": "check",
   "expectedExit": 1,
   "replace": [

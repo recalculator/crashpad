@@ -1,6 +1,6 @@
 {
   "title": "Data transformation",
-  "story": "A data migration flips refunded order totals negative. It runs without error and every query still works, but two integrity assertions fail.",
+  "description": "A data migration flips refunded order totals negative. It runs without error and every query still works, but two integrity assertions fail.",
   "mode": "check",
   "expectedExit": 1,
   "expect": {

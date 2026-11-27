@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: Typecheck, tests, demo (Node ${{ matrix.node }})
+    name: Typecheck and tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -36,8 +36,3 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - name: Storefront integration tests
-        working-directory: examples/storefront
-        run: npm test
-      - name: Full demo (all six scenarios)
-        run: npm run demo

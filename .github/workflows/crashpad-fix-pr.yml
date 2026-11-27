@@ -20,7 +20,7 @@ on:
       project:
         description: Crashpad project directory
         required: true
-        default: examples/storefront
+        default: test/fixtures/storefront
       dry_run:
         description: Verify only; do not push or open a PR
         type: boolean

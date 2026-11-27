@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../../src/cli.ts";
-import { buildScenarioRepo, loadScenarios } from "../../scripts/lib/scenario.ts";
+import { buildScenarioRepo, loadScenarios } from "../helpers/scenario.ts";
 import { DB_URL, projectFiles, tempDir, TestRepo, check, fix } from "../helpers/project.ts";
 
 let out = "";
@@ -57,7 +57,7 @@ describe("CLI exit semantics", () => {
   });
 });
 
-describe("demo scenarios (same inputs as `npm run demo`)", () => {
+describe("scenario fixtures (test/fixtures/scenarios)", () => {
   for (const s of loadScenarios()) {
     it(`${s.name}: ${s.title}`, async () => {
       const repoDir = buildScenarioRepo(s, tempDir());

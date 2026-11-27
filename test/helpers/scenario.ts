@@ -3,15 +3,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const CRASHPAD_ROOT = path.resolve(import.meta.dirname, "../..");
-export const STOREFRONT = path.join(CRASHPAD_ROOT, "examples/storefront");
-export const SCENARIOS = path.join(CRASHPAD_ROOT, "examples/scenarios");
+const FIXTURES = path.resolve(import.meta.dirname, "../fixtures");
+export const STOREFRONT = path.join(FIXTURES, "storefront");
+export const SCENARIOS = path.join(FIXTURES, "scenarios");
 
 export interface Scenario {
   name: string;
   dir: string;
   title: string;
-  story: string;
+  description: string;
   mode: "check" | "fix";
   expectedExit: number;
   addChecks?: unknown[];
@@ -36,26 +36,24 @@ export function sh(cwd: string, cmd: string, args: string[], env: NodeJS.Process
 }
 
 const GIT_ENV = {
-  GIT_AUTHOR_NAME: "Crashpad Demo",
-  GIT_AUTHOR_EMAIL: "demo@example.test",
-  GIT_COMMITTER_NAME: "Crashpad Demo",
-  GIT_COMMITTER_EMAIL: "demo@example.test",
+  GIT_AUTHOR_NAME: "Crashpad Test",
+  GIT_AUTHOR_EMAIL: "test@example.test",
+  GIT_COMMITTER_NAME: "Crashpad Test",
+  GIT_COMMITTER_EMAIL: "test@example.test",
 };
 
 function copyDir(src: string, dst: string): void {
-  fs.cpSync(src, dst, { recursive: true, filter: (p) => !p.split(path.sep).includes("node_modules") });
+  fs.cpSync(src, dst, { recursive: true });
 }
 
 /**
  * Build a real Git repository for a scenario: `main` holds the unchanged storefront
- * (the baseline), and branch `change` holds the scenario's edits on top of it.
- * node_modules is symlinked so the storefront's own tests can run inside it.
+ * fixture (the baseline), and branch `change` holds the scenario's edits on top of it.
  */
-export function buildScenarioRepo(s: Scenario, parent = fs.mkdtempSync(path.join(os.tmpdir(), `crashpad-demo-${s.name}-`))): string {
+export function buildScenarioRepo(s: Scenario, parent = fs.mkdtempSync(path.join(os.tmpdir(), `crashpad-scenario-${s.name}-`))): string {
   const repo = path.join(parent, "repo");
   copyDir(STOREFRONT, repo);
-  fs.writeFileSync(path.join(repo, ".gitignore"), "node_modules\ncrashpad-report/\ncrashpad-fix/\n");
-  fs.symlinkSync(path.join(CRASHPAD_ROOT, "node_modules"), path.join(repo, "node_modules"), "dir");
+  fs.writeFileSync(path.join(repo, ".gitignore"), "crashpad-report/\ncrashpad-fix/\n");
   sh(repo, "git", ["init", "-q", "-b", "main"]);
   sh(repo, "git", ["add", "-A"]);
   sh(repo, "git", ["commit", "-q", "-m", "Baseline storefront"], GIT_ENV);

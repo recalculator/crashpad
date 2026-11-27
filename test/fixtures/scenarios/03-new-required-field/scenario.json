@@ -1,6 +1,6 @@
 {
   "title": "New required field",
-  "story": "A NOT NULL column without a default is added. Every read still passes, but signup now violates the constraint.",
+  "description": "A NOT NULL column without a default is added. Every read still passes, but signup now violates the constraint.",
   "mode": "check",
   "expectedExit": 1,
   "expect": { "customer-profile": "pass", "order-summary": "pass", "signup": "regression", "create-order": "pass" },

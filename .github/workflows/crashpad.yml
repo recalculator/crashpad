@@ -1,9 +1,10 @@
-# Runs Crashpad on every pull request.
+# Runs this repository's composite action (action.yml) on every pull request,
+# against the storefront test fixture. This is a live self-test of the GitHub
+# integration: check result, job summary, report artifact, and PR comment.
 #
-# Security model: this uses `pull_request` (never `pull_request_target`), so PR code
-# runs with the PR's own token. For pull requests from forks GitHub makes that token
-# read-only: the check, job summary, and report artifact still work; only the PR
-# comment is skipped.
+# Security model: `pull_request` (never `pull_request_target`), so PR code runs
+# with the PR's own token. For fork PRs GitHub makes that token read-only: the
+# check, summary, and artifact still work; only the PR comment is skipped.
 name: Crashpad
 
 on:
@@ -25,58 +26,11 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
-    env:
-      CRASHPAD_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
-      CRASHPAD_PROJECT: examples/storefront
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v7
+          fetch-depth: 0 # the baseline is read from Git history
+      - uses: ./
         with:
-          node-version: 24.x
-          cache: npm
-      - run: npm ci
-
-      - name: Run Crashpad against the PR baseline
-        id: crashpad
-        run: |
-          # The checkout is GitHub's merge commit; its first parent is the exact base it was merged onto.
-          BASE="$(git rev-parse HEAD^1)"
-          set +e
-          node bin/crashpad.js check --base "$BASE" --project "$CRASHPAD_PROJECT" --report-dir crashpad-report > /dev/null
-          code=$?
-          set -e
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          if [ -f crashpad-report/crashpad-report.md ]; then
-            cat crashpad-report/crashpad-report.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Crashpad did not produce a report (exit $code). See the job log." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: crashpad-report
-          path: crashpad-report/
-          if-no-files-found: ignore
-
-      - name: Create or update PR comment
-        if: always() && hashFiles('crashpad-report/crashpad-report.json') != ''
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node bin/crashpad.js comment --report crashpad-report/crashpad-report.json --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER"
-
-      - name: Fail the check if Crashpad did not pass
-        if: steps.crashpad.outputs.exit_code != '0'
-        env:
-          CODE: ${{ steps.crashpad.outputs.exit_code }}
-        run: |
-          case "$CODE" in
-            1) echo "::error title=Crashpad::This change breaks configured database checks (exit 1). See the job summary." ;;
-            *) echo "::error title=Crashpad::Crashpad could not decide (exit $CODE): configuration, baseline, infrastructure, or inconclusive checks. See the job summary." ;;
-          esac
-          exit "${CODE:-2}"
+          project: test/fixtures/storefront
+          database-url: postgres://postgres:postgres@localhost:5432/postgres
