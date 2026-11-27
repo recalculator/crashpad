@@ -1,32 +1,117 @@
 # Validation record
 
-This is what has been validated, how, and what has not. Dates are 2026-11-26 and 2026-11-27.
+This is what has been validated, how, and what has not. Dates are 2026-11-26 and 2026-11-27. **Live** means it ran against the real thing. **Mocked** or **faked** means a stand-in, named in each entry.
 
 ## Environments
 
 | Where | Node | PostgreSQL | Result |
 |---|---|---|---|
-| Local, macOS (arm64) | 26.3.1 | 16.14 (Homebrew) | typecheck ✅, 147/147 tests ✅ |
-| Fresh `git clone` of `main` (b17b419) + `npm ci`, macOS | 26.3.1 | 16.14 | typecheck ✅, 147/147 tests ✅, `crashpad validate` on the fixture ✅ |
-| GitHub Actions `ubuntu-latest` (CI workflow) | 22.x and 24.x | `postgres:16` service container | typecheck and tests ✅ on `main` |
+| Local, macOS (arm64) | 26.3.1 | 16.14 (Homebrew) | typecheck ✅, **TESTCOUNT** tests ✅ |
+| Fresh `git clone` of `main` + `npm ci`, macOS | 26.3.1 | 16.14 | CLEANCLONE |
+| GitHub Actions `ubuntu-latest` (CI workflow) | 22.x and 24.x | `postgres:16` service container | CIRESULT |
 
-Not tested: PostgreSQL 13–15 and 17+, and Windows. Crashpad needs PostgreSQL 13+ for `DROP DATABASE … WITH (FORCE)`.
+Not tested: PostgreSQL 13–15 and 17+, and Windows. Crashpad needs PostgreSQL 13+ for `DROP DATABASE … WITH (FORCE)`. npm 11 prints harmless `allow-scripts` warnings (for `fsevents`, and for Crashpad's own build script when it is installed from Git or an archive).
 
-On a fresh install, npm 11 prints `allow-scripts` warnings: for `fsevents`, an optional macOS dependency of Vitest, and, when Crashpad is installed as a Git dependency, for Crashpad's own `prepare` build. Neither stops the install.
+## Packaged CLI (automated: `test/integration/package.test.ts`)
 
-## Installation
+The test does the following:
 
-In a new, empty project (`git init` + `npm init -y`), on 2026-11-27:
+1. `npm pack` builds `crashpad-0.2.0.tgz`. The archive contains `bin/`, `dist/`, the README, the license, and the third-party notice. It contains no `src/`, `test/`, or `.env` files.
+2. The archive is installed with `npm install` into an **empty directory outside the source checkout**, and the installed `crashpad --version` reports 0.2.0.
+3. The installed binary runs `check` on a copy of the `notes-api` fixture that has **no Crashpad config file**. The configuration is discovered, and the check exits **1** with the permission regression.
+4. `discover` reports all five areas ready. For a copy without a `start` script or runtime scenarios, `discover` names exactly those missing items. After `crashpad settings --set app.start=…` (stored in Crashpad's storage), the configuration area becomes ready and the repository stays unmodified.
 
-- `npm install --save-dev github:recalculator/crashpad#04e289c` installed Crashpad and built `dist/`. `npx crashpad --help` worked.
-- With the storefront fixture copied in and committed, `npx crashpad check --base HEAD --project app` exited **0** (13/13 passed).
-- After adding an uncommitted `RENAME COLUMN` migration, the same command exited **1**.
+Nothing was published to a registry.
 
-This shows the Git-dependency install path works. It is **not** validation on a real application: the project only contained a copy of the test fixture.
+## Five check areas (automated: `test/integration/suite-areas.test.ts`)
 
-## Automated tests (147)
+These tests use the `notes-api` fixture, a Node.js + PostgreSQL notes API with signup/login, notes with ownership, an admin endpoint, an audit log, OpenAPI, `.env.example`, SQL migrations, and runtime scenarios.
 
-Integration tests use a real PostgreSQL server and real Git repositories in temp directories. Only GitHub's HTTP API is faked (`FakeGitHub` in `test/integration/publish.test.ts`). Git is real: a local bare repository stands in for the GitHub remote via `url.<path>.insteadOf`, so fetch, push, and worktrees all run for real.
+- **Real components:** the app processes, PostgreSQL, Git commits for the baseline and candidate, `npm ci` installs, and discovery (the fixture has no `crashpad.config.json`).
+- **Every failure below was produced by actually running the changed code.**
+
+| Scenario | Expected and observed |
+|---|---|
+| Compatible change (new migration, optional field) | exit 0; all five areas complete |
+| `RENAME COLUMN` the app still uses | database read regression `42703`, plus the runtime smoke and permission checks for `/products` regress (500) |
+| `GET /me` drops `role` (code and spec) | spec `removed-response-field` **and** runtime contract check regress |
+| New required env var with no test value | `config:env:PAYMENTS_API_KEY` regression; `config:startup` regression (process exits); runtime checks skipped, not passed |
+| Ownership check removed | `permissions:note-visible-to-owner-and-admin` regression (bob gets 200); other checks pass |
+| Audit record no longer written on update | `workflows:signup-login-create-update` regression at the SQL side-effect step |
+| `POST /notes` requires a new field | spec `new-required-request-field`; workflow and permission scenarios regress (400) |
+| Endpoint removed | spec `removed-operation`; permission scenario regresses (404) |
+
+Also covered:
+
+- A repository **without a database** runs fully with an unreachable PostgreSQL URL; the database area is "not applicable".
+- An **unsupported project** (no `package.json`) exits 2 with "Nothing was verified" and the exact discovery gaps.
+- Unit tests (`test/unit/suite-rules.test.ts`) cover:
+  - the OpenAPI rules and runtime validation;
+  - environment parsing, validation, and sanitization (the caller's other environment variables are not passed in);
+  - templating and redaction;
+  - the shared classification and exit-code rules;
+  - the discovery rules for Prisma, pnpm, dbmate, JS migrations, Bun, and a non-PostgreSQL Prisma provider.
+
+## Repair
+
+### Mocked agent (automated: `test/integration/repair.test.ts`)
+
+The agent is a **mock Claude Code CLI** (`test/fixtures/fake-claude/claude`). It imitates the CLI's flags, JSON result, and error output, and applies scripted edits. Crashpad's checks, verification, Git, and PostgreSQL are real. These tests show:
+
+- an **incorrect patch is rejected** by independent verification; the failure is fed back on `--resume`; the corrected patch is accepted only after verification;
+- a "success" exit **with no fix** is rejected, as are attempts that change nothing;
+- edits to `crashpad.http.json` and to a test file are reverted and never counted;
+- expired sign-in, exhausted usage, turn limits, deadlines, and cancellation stop the run with clear messages;
+- no permission-bypass flags or `--bare` are used, and `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` are removed from Claude's environment in subscription mode;
+- the account details printed by `claude auth status` are not kept;
+- the deterministic rename fixer repairs a rename **without invoking any agent**;
+- a verified repair is published with `publishFiles` as a draft PR whose commit's parent is the exact failing commit and which touches only the repaired file; the branch is never overwritten, and Crashpad refuses to repair its own fix branches and commits.
+
+### Live Claude Code repair (2026-11-27, this machine)
+
+- **Setup:** Claude Code 2.1.332, signed in with a Claude subscription (`authMethod: claude.ai`, Pro). No API key was involved.
+- **Command:** `crashpad repair --base main --head change --agent claude --max-attempts 2 --max-turns 25 --max-budget-usd 1 --deadline-min 15 --model sonnet`
+- **Target:** the `notes-api` permission-regression scenario (ownership check removed from `GET /notes/{id}`).
+
+| Run | Result |
+|---|---|
+| 1 | **Verified after 1 attempt** (10 turns, est. $0.14 as reported by Claude Code). The patch restored the exact ownership condition in `server.js`. Crashpad's verification: all 22 checks passed. The fixture's own `npm test` was reported as **already failing before the change** (a fixture bug: `node --test test/` on Node 26), so it was not counted. The fixture was fixed afterwards. |
+| 2 (after the fixture fix) | **Verified after 1 attempt** (7 turns, est. $0.12, 15 s of agent time). Same one-line patch. All 22 checks passed **and** `npm run --silent test` passed. |
+
+Claude's own summary in run 1 said it "couldn't verify it by running it". Crashpad's independent verification is what established the result. Neither live run produced an incorrect patch, so **live rejection of a wrong patch was not observed**; that path is covered by the mocked test above.
+
+## GitHub App service and companion (automated: `test/integration/github-app.test.ts`)
+
+- **Real:** the Crashpad service (HTTP), the companion, Git, PostgreSQL, the app processes, and discovery.
+- **Faked:** GitHub's REST API and device flow (`test/helpers/fake-github-server.ts`) and the Claude CLI (the mock above).
+  - The fake verifies the App JWT's RS256 signature and claims, and scopes installation tokens to the requested repositories and permissions.
+  - It implements the Git Data API with git plumbing on a **real bare repository**, so the fix commits are real Git objects.
+
+The tests cover:
+
+- **webhook signature rejection**, replayed deliveries, and per-commit deduplication;
+- the **installation's repository selection**: events for other repositories are ignored, and a repository removed from the selection stops being served;
+- **device-flow pairing**:
+  - a user without access to the installation cannot pair;
+  - the GitHub user token is never stored;
+  - the companion token file is mode 600, and only its hash is kept on the service;
+- **offline state**: the check run says the companion is offline and that nothing has been checked; after a heartbeat it says "Queued on your Crashpad companion";
+- **exact-SHA checks** on the companion with a read-only, single-repository token; the check run is completed with the report and a **Repair with Claude** action;
+- **requested repair** (refused for a reader; one per commit):
+  - verified locally;
+  - published as a **draft PR into the PR branch**, whose commit's parent is the exact head SHA and which changes only `server.js` (with a `Crashpad-Repair` trailer);
+  - a successful **Crashpad repair** check run;
+- **stale jobs**: when the PR moves, the old check run is cancelled ("Superseded by …"), the companion is told to stop, and its result is refused (409); the new commit is leased instead;
+- **fork PRs**: action required, with **Run Crashpad**; approval refused for a reader and accepted from a writer; never repairable;
+- **automatic repair**: off by default; when the owner opts in for a repository, a failing check queues a repair; a companion with repairs disabled reports "Repairs are turned off" and changes nothing;
+- **loop prevention**: Crashpad's own fix PR is checked but gets no repair action and no automatic repair, even with automatic repair on;
+- **onboarding** (`crashpad setup`): lists the installation's repositories, fetches each default branch with a read-only token, and reports all five areas ready for `acme/notes`; results are stored in Crashpad's storage and the repository is unchanged.
+
+**Not run live:** no GitHub App has been registered, and no service has been deployed at a public URL. App authentication, webhook delivery, check-run rendering, device-flow pairing, and fix-branch creation have not been exercised against github.com. See [github-app.md](github-app.md) for the remaining steps.
+
+## Database engine and earlier coverage
+
+Integration tests use a real PostgreSQL server and real Git repositories in temp directories. Only GitHub's HTTP API is faked (`FakeGitHub`, now in `test/helpers/fake-github.ts`). Git is real: a local bare repository stands in for the GitHub remote via `url.<path>.insteadOf`, so fetch, push, and worktrees all run for real.
 
 | Area | Covered by |
 |---|---|
@@ -57,6 +142,7 @@ Integration tests use a real PostgreSQL server and real Git repositories in temp
 | CLI exit codes 0/1/2 (including an unreachable PostgreSQL server), report files, `fix --apply` | `cli-and-scenarios.test.ts` |
 | Six scenario fixtures (healthy change, rename, new required column, data transformation, query-only change, rename fix) | `cli-and-scenarios.test.ts` |
 | The fixture app works on the migrated fixture. In the rename scenario, its query fails with `42703` before the fix. After `git apply` of the verified patch, every app operation works and `check` exits 0. The checkout is unchanged by `fix` | `storefront.test.ts` |
+
 
 ## Live GitHub runs (recalculator/crashpad, 2026-11-27)
 
@@ -101,9 +187,11 @@ The PR-check workflow now runs `action.yml` via `uses: ./` against `test/fixture
 
 The action's PR-comment step has not yet run on a pull request. PR #1's comment came from the earlier inline workflow.
 
+
 ## Not validated
 
-- The composite `action.yml` has not been run from another repository, and its PR-comment step has not run live.
-- Crashpad has not been used on a real application. All live runs used the storefront test fixture.
-- A real fork PR (read-only token) has not been run. The 403 handling is covered by an automated test with a faked API.
-- Behavior on very large schemas or datasets, and on other operating systems.
+- **Crashpad has not been used on a real application** other than the test fixtures.
+- **The GitHub App flow has not run against github.com** (see above).
+- A real fork PR with a read-only token: covered only with fakes.
+- The composite `action.yml` from another repository, and its PR-comment step on a live pull request.
+- PostgreSQL other than 16, Windows, very large schemas or repositories, and package managers other than npm in runtime checks. The pnpm and Yarn commands are discovered, but only npm installs were executed in tests.

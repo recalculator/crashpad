@@ -4,3 +4,6 @@ crashpad-report/
 .crashpad/
 *.log
 .DS_Store
+crashpad-fix/
+crashpad-repair/
+*.tgz
