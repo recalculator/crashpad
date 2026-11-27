@@ -85,6 +85,25 @@ const RULES_TEXT = [
   "package.json scripts",
 ];
 
+/**
+ * Whether a verification run shows the repair worked. Every regression must be
+ * gone, nothing may newly fail or become undecided, and something must pass.
+ * Findings that were ALREADY undecided in the original run (for example a baseline
+ * failure the change did not cause) are allowed to remain: a repair of this change
+ * cannot be expected to fix them, and they are reported.
+ */
+export function verifiedAgainst(original: SuiteReport, v: SuiteReport): { ok: boolean; reason: string } {
+  if (v.problems.length) return { ok: false, reason: `could not complete: ${v.problems[0]!.message}` };
+  const bad = v.findings.filter((f) => ACTIONABLE.has(f.classification));
+  if (bad.length) return { ok: false, reason: `${bad.length} check(s) still broken: ${bad.slice(0, 3).map((f) => f.id).join(", ")}` };
+  if (!v.findings.some((f) => f.classification === "pass")) return { ok: false, reason: "nothing passed" };
+  const before = new Map(original.findings.map((f) => [f.id, f.classification]));
+  const fresh = v.findings.filter((f) => f.classification !== "pass" && f.classification !== "retired" && before.get(f.id) !== f.classification);
+  if (fresh.length) return { ok: false, reason: `${fresh.length} check(s) newly undecided: ${fresh.slice(0, 3).map((f) => `${f.id} (${f.classification})`).join(", ")}` };
+  const kept = v.findings.filter((f) => f.classification !== "pass" && f.classification !== "retired");
+  return { ok: true, reason: kept.length ? `${kept.length} pre-existing undecided check(s) unchanged (${kept.slice(0, 3).map((f) => f.id).join(", ")})` : "all checks pass" };
+}
+
 export async function repair(o: RepairOptions): Promise<RepairResult> {
   const log = o.log ?? (() => {});
   const started = Date.now();
@@ -118,7 +137,9 @@ export async function repair(o: RepairOptions): Promise<RepairResult> {
   }
   const config = orig.candidateConfig as SuiteConfig;
   const guard = { repoRoot: o.repoRoot, commit: o.candidate.commit, projectDir: o.projectDir, config };
-  const testsBefore = await runAppTests({ code: { root: o.repoRoot, commit: o.candidate.commit }, projectDir: o.projectDir, config, timeoutMs: 600_000, ...(o.signal ? { signal: o.signal } : {}) });
+  // Application tests that already fail at the BASELINE are not the change's fault and are not
+  // required. Tests the change itself broke must pass again for a repair to count.
+  const testsBefore = await runAppTests({ code: { root: o.repoRoot, commit: o.base.commit }, projectDir: o.projectDir, config, timeoutMs: 600_000, ...(o.signal ? { signal: o.signal } : {}) });
   const preexisting = testsBefore.results.filter((r) => !r.ok).map((r) => r.command);
 
   const ws = await Workspace.create(o.repoRoot, o.candidate.commit);
@@ -129,7 +150,7 @@ export async function repair(o: RepairOptions): Promise<RepairResult> {
       const tests = await runAppTests({ code: { root: ws.dir, commit: null }, projectDir: o.projectDir, config, timeoutMs: 600_000, ...(o.signal ? { signal: o.signal } : {}) });
       const testsOk = !tests.problem && tests.results.every((r) => r.ok || preexisting.includes(r.command));
       if (v.report.base.commit !== o.base.commit) throw new Error("internal: verification used a different baseline");
-      return { report: v.report, tests, ok: v.report.exitCode === 0 && testsOk };
+      return { report: v.report, tests, ok: verifiedAgainst(orig.report, v.report).ok && testsOk };
     };
     const finish = async (outcome: RepairOutcome, message: string, verification: SuiteReport | null, proposer: string | null): Promise<RepairResult> => {
       const files: FileChange[] = [];
@@ -233,7 +254,7 @@ export async function repair(o: RepairOptions): Promise<RepairResult> {
       const remainingChanges = (await ws.changes()).length;
       if (!remainingChanges) {
         record.reason = bad.length ? "only protected files were changed (reverted)" : `no files changed (${run.status}: ${run.summary.slice(0, 200)})`;
-        prompt = feedbackPrompt({ attempt, report: null, violations: bad, tests: [], noChanges: !bad.length });
+        prompt = feedbackPrompt({ attempt, report: null, original: orig.report, violations: bad, tests: [], noChanges: !bad.length });
         continue;
       }
       const v = await verify();
@@ -242,11 +263,12 @@ export async function repair(o: RepairOptions): Promise<RepairResult> {
       record.tests = v.tests;
       if (v.ok && !bad.length) {
         record.verdict = "verified";
-        record.reason = "all checks pass against the original expectations, and the application tests pass";
+        record.reason = v.report.exitCode === 0 ? "all checks pass against the original expectations, and the application tests pass" : `no regressions remain against the original expectations; ${verifiedAgainst(orig.report, v.report).reason}; the application tests pass`;
         return await finish("verified", `Verified after ${attempt} agent attempt(s).`, v.report, o.agent.name);
       }
-      record.reason = bad.length ? "protected files were changed (reverted); the rest is re-verified next attempt" : v.report.exitCode !== 0 ? v.report.headline : "application tests failed";
-      prompt = feedbackPrompt({ attempt, report: v.report, violations: bad, tests: v.tests.results, ...(v.tests.problem ? { testProblem: v.tests.problem } : {}), noChanges: false });
+      const judged = verifiedAgainst(orig.report, v.report);
+      record.reason = bad.length ? "protected files were changed (reverted); the rest is re-verified next attempt" : !judged.ok ? judged.reason : "application tests failed";
+      prompt = feedbackPrompt({ attempt, report: v.report, original: orig.report, violations: bad, tests: v.tests.results, ...(v.tests.problem ? { testProblem: v.tests.problem } : {}), noChanges: false });
     }
     return await finish("unresolved", `Unresolved after ${o.maxAttempts} attempt(s); no change passed verification. Nothing was published.`, last, o.agent.name);
   } finally {

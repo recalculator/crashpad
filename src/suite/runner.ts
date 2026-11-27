@@ -420,7 +420,9 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
         findings.push(...rt.findings);
         for (const a of AREAS) {
           ran[a].push(...(rt.ran[a] ?? []));
-          missing[a].push(...(rt.missing[a] ?? []));
+          // Discovery already explains missing scenarios; do not say it twice.
+          const discoveredGap = (a === "permissions" || a === "workflows") && missing[a].length > 0;
+          if (!discoveredGap) missing[a].push(...(rt.missing[a] ?? []));
           unavailable[a].push(...(rt.unavailable[a] ?? []));
         }
       } catch (err) {

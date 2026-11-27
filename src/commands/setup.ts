@@ -52,7 +52,7 @@ export async function onboard(source: Source, projectDir: string, repo: string, 
   };
   areas.database = { status: status("database", has("database.migrations") && has("database.checks"), has("database.migrations")), found: d.facts.filter((f) => /migrations|seed|check manifest|PostgreSQL/i.test(f)), missing: missingFor("database") };
   areas.api = { status: status("api", has("api.openapi") && has("app.start"), has("api.openapi")), found: d.facts.filter((f) => /OpenAPI/i.test(f)), missing: [...missingFor("api"), ...(has("api.openapi") && !has("app.start") ? ["runtime contract checks need an application start command (app.start)"] : [])] };
-  areas.config = { status: status("config", has("app.start") && has("app.envSchema"), has("app.start")), found: d.facts.filter((f) => /start script|build script|environment schema|readiness|package.json|lockfile/i.test(f)), missing: missingFor("config") };
+  areas.config = { status: status("config", has("app.start") && has("app.envSchema"), has("app.start")), found: d.facts.filter((f) => /start script|build script|environment (schema|declared)|readiness|package.json|lockfile|port variable|typecheck script|test script/i.test(f)), missing: missingFor("config") };
   for (const a of ["permissions", "workflows"] as const) areas[a] = { status: status(a, has("http.checks") && has("app.start"), false), found: d.facts.filter((f) => /runtime check manifest/i.test(f)), missing: missingFor(a) };
   return { repo, commit, discoveredAt: new Date().toISOString(), rulesVersion: DISCOVERY_RULES_VERSION, configSources: sources, areas, ...(configError ? { configError } : {}) };
 }

@@ -91,15 +91,18 @@ describe("OpenAPI breaking-change rules", () => {
 });
 
 describe("environment contracts", () => {
-  it("parses dotenv examples and reports missing required variables (dotenv-safe semantics)", () => {
-    const decls = parseDotenvExample("# c\nPORT=3000\nexport A='x y'\nB=\nC=\"q\\nr\" # trailing\nnot a var\n");
+  it("parses dotenv examples as declarations: blank values are never reported as missing", () => {
+    const text = "# c\nPORT=3000\nexport A='x y'\nB=\nC=\"q\\nr\" # trailing\nnot a var\n# WILLO_PORT=8787\n# just a comment = here\n";
+    const decls = parseDotenvExample(text);
     expect(decls.map((d) => [d.name, d.example, d.line])).toEqual([["PORT", "3000", 2], ["A", "x y", 3], ["B", undefined, 4], ["C", "q\nr", 5]]);
-    const schema: EnvSchema = { path: ".env.example", format: "dotenv-example", required: decls, examples: { PORT: "3000", A: "x y", C: "q\nr" } };
+    expect(parseDotenvExample(text, { commented: true }).map((d) => d.name)).toEqual(["PORT", "A", "B", "C", "WILLO_PORT"]);
+    const schema: EnvSchema = { path: ".env.example", format: "dotenv-example", required: [], declared: decls, examples: { PORT: "3000", A: "x y", C: "q\nr" } };
     const { env, appKeys } = buildTestEnv({ schema, useExampleValues: true, explicit: { C: "explicit" }, generated: { PORT: "4111" } });
     expect(appKeys).toEqual(["A", "C", "PORT"]);
     expect(env.PORT).toBe("4111");
     expect(env.C).toBe("explicit");
-    expect(validateEnv(schema, { PORT: "1", A: "a", C: "c" }).map((i) => `${i.kind}:${i.name}`)).toEqual(["missing:B"]);
+    // B has no value anywhere: a dotenv example cannot say it is required, so it is not a violation.
+    expect(validateEnv(schema, { PORT: "1", A: "a", C: "c" })).toEqual([]);
   });
 
   it("never passes the caller's environment through, apart from tool variables", () => {
@@ -115,6 +118,7 @@ describe("environment contracts", () => {
       path: "env.schema.json",
       format: "json-schema",
       required: [{ name: "PORT", line: 1 }],
+      declared: [{ name: "PORT", line: 1 }],
       examples: {},
       jsonSchema: { type: "object", required: ["PORT"], properties: { PORT: { type: "integer" }, LOG_LEVEL: { enum: ["debug", "info"] }, API_TOKEN: { minLength: 30 } } },
     };
@@ -196,6 +200,24 @@ describe("discovery rules (Node.js / PostgreSQL)", () => {
     expect(d.layer.tests).toEqual([["pnpm", "run", "typecheck"], ["pnpm", "run", "test"]]);
     expect(d.layer.api).toEqual({ openapi: "openapi.yaml" });
     expect(msgs(d)).toMatch(/permissions: no permission scenarios/);
+  });
+
+  it("explains Postgres projects without migration history and finds the port variable (real-project trial)", async () => {
+    // Shaped like the trial's Next.js + Drizzle project, whose schema is applied with drizzle-kit push.
+    const drizzle = await project({ "package.json": JSON.stringify({ scripts: { start: "next start", "db:push": "drizzle-kit push" }, dependencies: { postgres: "3", "drizzle-orm": "0" } }), "drizzle.config.ts": "export default {}", ".env.example": "DATABASE_URL=\nPORT=3000\n" });
+    expect(drizzle.layer.database).toBeUndefined();
+    expect(msgs(drizzle)).toMatch(/drizzle.config.ts is present but no generated Drizzle migrations[\s\S]*drizzle-kit generate/);
+    expect(drizzle.facts).toContain("port variable: PORT (declared in the environment example)");
+    expect(msgs(drizzle)).toContain("no health endpoint is known (there is no OpenAPI document)");
+    // Shaped like the trial's Hono app: the port variable is only a commented default.
+    const custom = await project({ "package.json": JSON.stringify({ scripts: { start: "tsx src/server/main.ts" } }), ".env.example": "API_KEY=\n# APP_PORT=8787\n# DB_PORT=5432\n" });
+    expect((custom.layer.app as { portEnv?: string }).portEnv).toBe("APP_PORT");
+    const none = await project({ "package.json": JSON.stringify({ scripts: { start: "node s.js" } }), ".env.example": "API_KEY=\n" });
+    expect(none.missing.find((m) => m.key === "app.portEnv")?.message).toMatch(/assumes the server reads PORT/);
+    const two = await project({ "package.json": JSON.stringify({ scripts: { start: "node s.js" } }), ".env.example": "WEB_PORT=1\nADMIN_PORT=2\n" });
+    expect(two.missing.find((m) => m.key === "app.portEnv")?.message).toMatch(/several port variables/);
+    const pg = await project({ "package.json": JSON.stringify({ dependencies: { pg: "8" } }) });
+    expect(msgs(pg)).toMatch(/a PostgreSQL client \(pg\) is a dependency, but no SQL migrations/);
   });
 
   it("explains exactly what is unsupported instead of guessing", async () => {

@@ -51,6 +51,16 @@ switch (mode) {
       result("Admins can see notes again too.");
     }
     break;
+  case "fix-import-then-alias":
+    // First attempt: fix only the caller (the app starts, but the app's own test still imports the old name).
+    if (!resumed) {
+      edit("server.js", 'import { greet } from "./lib.js";', 'import { sayHello as greet } from "./lib.js";');
+      result("Updated the import in server.js.");
+    } else {
+      fs.appendFileSync(path.join(process.cwd(), "lib.js"), "\nexport const greet = sayHello;\n");
+      result("Kept the old name as an alias so existing callers and tests work.");
+    }
+    break;
   case "cheat": {
     const m = path.join(process.cwd(), "crashpad.http.json");
     fs.writeFileSync(m, fs.readFileSync(m, "utf8").replace('"bob": [403, 404]', '"bob": [200, 403, 404]'));

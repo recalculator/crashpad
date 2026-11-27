@@ -7,7 +7,7 @@ import { discoverer } from "../../src/discovery/index.ts";
 import { runSuite } from "../../src/suite/runner.ts";
 import { renderSuiteMarkdown } from "../../src/suite/markdown.ts";
 import { DB_URL, tempDir } from "../helpers/project.ts";
-import { buildScenarioRepo, loadScenarios, NOTES_API, NOTES_SCENARIOS } from "../helpers/scenario.ts";
+import { buildScenarioRepo, loadScenarios, NOTES_API, NOTES_SCENARIOS, OPTIONAL_ENV_APP, type Scenario } from "../helpers/scenario.ts";
 
 /**
  * All five check areas against a real application: the notes-api fixture runs as
@@ -40,7 +40,8 @@ describe("notes-api fixture (discovered configuration, real app processes)", () 
       for (const [id, code] of Object.entries(s.expectErrorCode ?? {})) expect(report.database?.checks.find((c) => c.id === id)?.candidate.error?.code, id).toBe(code);
       expect(report.exitCode, md).toBe(s.expectedExit);
       expect(report.configSources).toEqual(["discovered"]);
-      expect(report.coverage.every((c) => c.status === "complete"), md).toBe(true);
+      for (const c of report.coverage) expect(c.status, `${c.area}\n${md}`).toBe(s.expectCoverage?.[c.area] ?? "complete");
+      for (const [area, text] of Object.entries(s.expectMissing ?? {})) expect(report.coverage.find((c) => c.area === area)!.missing.join("\n")).toContain(text);
       // Every finding that is not a pass carries concrete evidence or a precise message.
       for (const f of report.findings.filter((x) => x.classification === "regression")) expect(f.message.length).toBeGreaterThan(10);
     });
@@ -97,5 +98,34 @@ describe("applicability", () => {
     expect(report.findings).toEqual([]);
     expect(md).toContain("no package.json: only Node.js projects are supported");
     expect(md).toContain("no OpenAPI document found");
+  });
+});
+
+describe("onboarding defects found in the real-project trial (regression coverage)", () => {
+  // Shaped like the trial project: blank optional keys in .env.example and a port read from
+  // APP_PORT (declared only as a commented default). Before the fix, Crashpad reported the
+  // blank keys as missing required variables and could not start the app on its port.
+  const scenario = (over: Partial<Scenario>): Scenario => ({ name: "optional-env", dir: OPTIONAL_ENV_APP, title: "", description: "", mode: "check", expectedExit: 0, ...over });
+
+  it("does not treat blank keys of a dotenv example as missing, and discovers the port variable", async () => {
+    const repo = buildScenarioRepo(scenario({}), tempDir(), OPTIONAL_ENV_APP);
+    const ctx = await resolveContext({ cwd: repo, base: "main", head: "change" });
+    const { report, candidateConfig } = await runSuite({ ...suiteInputFrom(ctx, "postgres://127.0.0.1:1/none"), discover: discoverer() });
+    const md = renderSuiteMarkdown(report);
+    expect(candidateConfig?.app?.portEnv).toBe("APP_PORT");
+    expect(report.findings.filter((f) => f.id.startsWith("config:env:") && f.id !== "config:env:schema"), md).toEqual([]);
+    expect(report.findings.find((f) => f.id === "config:startup")?.classification, md).toBe("pass");
+    expect(report.exitCode, md).toBe(0);
+    expect(md).toContain("1 variable(s), 0 with a test value");
+  });
+
+  it("catches a startup regression from an incomplete rename", async () => {
+    const repo = buildScenarioRepo(scenario({ replace: [{ file: "lib.js", find: "export function greet(", with: "export function sayHello(" }] }), tempDir(), OPTIONAL_ENV_APP);
+    const ctx = await resolveContext({ cwd: repo, base: "main", head: "change" });
+    const { report } = await runSuite({ ...suiteInputFrom(ctx, "postgres://127.0.0.1:1/none"), discover: discoverer() });
+    const f = report.findings.find((x) => x.id === "config:startup")!;
+    expect(f.classification).toBe("regression");
+    expect(f.evidence.map((e) => e.detail).join("\n")).toContain("does not provide an export named 'greet'");
+    expect(report.exitCode).toBe(1);
   });
 });

@@ -1,0 +1,10 @@
+{
+  "name": "crashpad-fixture-optional-env-app",
+  "private": true,
+  "type": "module",
+  "description": "Test fixture shaped like a real project from the onboarding trial: optional blank keys in .env.example, a port read from a project-specific variable, and the app's own tests.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}

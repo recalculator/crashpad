@@ -181,6 +181,16 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
       }
     }
   }
+  if (!database.migrations && !missing.some((m) => m.area === "database")) {
+    const drizzleConfig = await firstExisting(source, dir, ["drizzle.config.ts", "drizzle.config.js", "drizzle.config.mjs", "drizzle.config.json"]);
+    if (drizzleConfig) {
+      need("database", `${drizzleConfig} is present but no generated Drizzle migrations were found (drizzle/meta/_journal.json). A schema applied with \`drizzle-kit push\` has no migration history to check; generate migrations (\`drizzle-kit generate\`) or set database.migrations`, "database.migrations");
+    } else if (prismaSchema !== null && !prismaDirs.length) {
+      need("database", "prisma/schema.prisma is present but there is no prisma/migrations directory (a `prisma db push` workflow has no migration history to check); set database.migrations if migrations live elsewhere", "database.migrations");
+    } else if (node?.postgresClient) {
+      need("database", `a PostgreSQL client (${node.postgresClient}) is a dependency, but no SQL migrations were found in ${SQL_MIGRATION_DIRS.join(", ")}; set database.migrations to enable database checks`, "database.migrations");
+    }
+  }
   if (database.migrations) {
     const schema = await firstExisting(source, dir, SCHEMA_FILES);
     if (schema) {
@@ -225,9 +235,12 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
   const dotenv = await firstExisting(source, dir, ENV_DOTENV);
   const jsonEnv = dotenv ? null : await firstExisting(source, dir, ENV_JSON);
   let envKeys: string[] = [];
+  let documentedKeys: string[] = [];
   if (dotenv) {
-    envKeys = parseDotenvExample((await read(dotenv)) ?? "").map((d) => d.name);
-    facts.push(`environment schema: ${dotenv} (${envKeys.length} variable(s), all required by dotenv-safe convention)`);
+    const text = (await read(dotenv)) ?? "";
+    envKeys = parseDotenvExample(text).map((d) => d.name);
+    documentedKeys = parseDotenvExample(text, { commented: true }).map((d) => d.name);
+    facts.push(`environment declared in ${dotenv} (${envKeys.length} variable(s); a dotenv example does not mark variables required, so startup decides)`);
   } else if (jsonEnv) {
     facts.push(`environment schema: ${jsonEnv} (JSON Schema)`);
     try {
@@ -250,7 +263,19 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
       layer.app.readiness = { path: health };
       facts.push(`readiness: GET ${health} (from the OpenAPI document)`);
     } else {
-      need("config", "no health endpoint in the OpenAPI document; readiness means the port accepts connections", "app.readiness.path");
+      need("config", specDoc ? "the OpenAPI document declares no health endpoint; readiness means the port accepts connections" : "no health endpoint is known (there is no OpenAPI document); readiness means the port accepts connections", "app.readiness.path");
+    }
+    // The port variable: PORT, or the one *_PORT variable the env example declares (commented defaults count).
+    const ports = [...new Set(documentedKeys.filter((k) => k === "PORT" || /_PORT$/.test(k)))];
+    const appPorts = ports.filter((k) => !/^(DB|PG|POSTGRES|POSTGRESQL|DATABASE|REDIS|MYSQL|MONGO|SMTP|MAIL|EMAIL)_/.test(k));
+    if (appPorts.includes("PORT")) facts.push("port variable: PORT (declared in the environment example)");
+    else if (appPorts.length === 1) {
+      layer.app.portEnv = appPorts[0];
+      facts.push(`port variable: ${appPorts[0]} (declared in ${dotenv})`);
+    } else if (appPorts.length > 1) {
+      need("config", `several port variables are declared (${appPorts.join(", ")}); set app.portEnv to the one the server listens on`, "app.portEnv");
+    } else if (layer.app.start) {
+      need("config", "no port variable is declared in the environment example; Crashpad assumes the server reads PORT (set app.portEnv if it does not)", "app.portEnv");
     }
   }
 

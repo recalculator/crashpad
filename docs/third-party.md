@@ -20,4 +20,4 @@ What is Crashpad's own: the OpenAPI breaking-change rules (`src/engines/openapi.
 
 External programs Crashpad invokes but does not bundle: `git`, `tar`, the project's package manager (npm, pnpm, or Yarn), a PostgreSQL server, and, only for `repair --agent claude`, the user's own Claude Code CLI.
 
-The `.env.example` convention (every listed variable is required) follows [dotenv-safe](https://github.com/rolodato/dotenv-safe). Crashpad implements the convention itself and does not depend on that package.
+Crashpad reads `.env.example` files itself. It treats them as declarations, not as a list of required variables: the strict "every key is required" convention of [dotenv-safe](https://github.com/rolodato/dotenv-safe) misreported optional keys in a real project.

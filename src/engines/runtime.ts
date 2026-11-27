@@ -243,7 +243,20 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
       const candSchema = (cs as { ok: true; schema: EnvSchema }).schema;
       const candEnv = envFor(input.candidate, candSchema);
       const candIssues = validateEnv(candSchema, candEnv);
-      add(ran, "config", `environment validated against ${candSchema.path} (${candSchema.format}, ${candSchema.required.length} required variable(s))`);
+      if (candSchema.format === "dotenv-example") {
+        // A dotenv example declares variables but cannot say which are required, so a
+        // missing value is never a finding by itself; the startup check decides.
+        const withValue = candSchema.declared.filter((d) => candEnv[d.name] !== undefined && candEnv[d.name] !== "");
+        add(ran, "config", `environment declared in ${candSchema.path}: ${candSchema.declared.length} variable(s), ${withValue.length} with a test value (missing values are never invented; startup shows whether they are needed)`);
+        const baseDeclared = new Set(bs?.ok ? bs.schema.declared.map((d) => d.name) : []);
+        for (const d of candSchema.declared) {
+          if (!baseDeclared.has(d.name) && bs?.ok && (candEnv[d.name] === undefined || candEnv[d.name] === "")) {
+            add(missing, "config", `${d.name} is newly declared in ${candSchema.path}:${d.line} and has no test value. Crashpad cannot tell whether it is required; if deployments must set it, add a test value: crashpad settings --set app.env.${d.name}=…`);
+          }
+        }
+      } else {
+        add(ran, "config", `environment validated against ${candSchema.path} (${candSchema.format}, ${candSchema.required.length} required variable(s))`);
+      }
       for (const issue of candIssues) {
         const atBase = baseEnvIssues?.find((b) => b.name === issue.name && b.kind === issue.kind);
         const classification: Classification = atBase ? "baseline-failure" : "regression";
@@ -265,7 +278,7 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
         );
       }
       if (!candIssues.length) {
-        out.push(mkFinding("config", "env:schema", "env", `Environment satisfies ${candSchema.path}`, "pass", "ok", "Every required variable has a valid test value", { status: baseEnvIssues ? (baseEnvIssues.length ? "fail" : "pass") : "not-present", summary: baseEnvIssues ? `${baseEnvIssues.length} issue(s)` : "no schema" }, { status: "pass", summary: `${candSchema.required.length} required variable(s) satisfied` }, [], !baseEnvIssues, { file: candSchema.path }));
+        out.push(mkFinding("config", "env:schema", "env", `Environment satisfies ${candSchema.path}`, "pass", "ok", candSchema.format === "dotenv-example" ? "No environment contract violations (a dotenv example declares variables; it does not mark them required)" : "Every required variable has a valid test value", { status: baseEnvIssues ? (baseEnvIssues.length ? "fail" : "pass") : "not-present", summary: baseEnvIssues ? `${baseEnvIssues.length} issue(s)` : "no schema" }, { status: "pass", summary: candSchema.format === "dotenv-example" ? `${candSchema.declared.length} declared variable(s)` : `${candSchema.required.length} required variable(s) satisfied` }, [], !baseEnvIssues, { file: candSchema.path }));
       }
       return out;
     };
@@ -292,6 +305,14 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
       else if (cStart.outcome.status === "not-run" && cand.buildFailed && bStart.ok) verdict = { classification: "regression", reason: "build-failed", message: `Built and started before this change; now ${cStart.outcome.summary}` };
       else if (cStart.outcome.status === "not-run") verdict = { classification: "inconclusive", reason: "candidate-not-prepared", message: `Candidate could not be prepared: ${cStart.outcome.summary}` };
       else if (verdict.reason === "expectation-failed") verdict = { classification: "regression", reason: cStart.outcome.summary.startsWith("not ready") ? "readiness-timeout" : "startup-failed", message: `Started before this change; now ${cStart.outcome.summary}` };
+      // When it fails on both versions because of how Crashpad started it, say what to check.
+      if (verdict.classification === "baseline-failure") {
+        const out = bStart.outcome.evidence.find((e) => e.kind === "log")?.detail ?? "";
+        const app = input.base.app;
+        const hints: string[] = [];
+        if (/EADDRINUSE/.test(out) || (!app.readiness.path && bStart.outcome.summary.startsWith("not ready"))) hints.push(`Crashpad passed the port in ${app.portEnv}. If the application reads its port from another variable, set it: crashpad settings --set app.portEnv=<NAME>`);
+        if (hints.length) verdict = { ...verdict, message: `${verdict.message}. ${hints.join(" ")}` };
+      }
       findings.push(
         mkFinding("config", "startup", "startup", "Application startup and readiness", verdict.classification, verdict.reason, verdict.message, toSide(bStart.outcome), toSide(cStart.outcome), [...bStart.outcome.evidence, ...cStart.outcome.evidence], false, {
           operation: input.candidate.app.start!.join(" "),

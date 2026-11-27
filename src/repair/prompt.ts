@@ -61,13 +61,20 @@ ${describeFindings(c.report)}
 - Do not commit, push, or access the network.`;
 }
 
-export function feedbackPrompt(opts: { attempt: number; report: SuiteReport | null; violations: Violation[]; tests: TestCommandResult[]; testProblem?: string; noChanges: boolean }): string {
+export function feedbackPrompt(opts: { attempt: number; report: SuiteReport | null; original?: SuiteReport; violations: Violation[]; tests: TestCommandResult[]; testProblem?: string; noChanges: boolean }): string {
   const parts: string[] = [`Crashpad verified attempt ${opts.attempt} independently and it did not pass.`];
   if (opts.noChanges) parts.push("You did not change any files.");
   if (opts.violations.length) {
     parts.push(`These changes were rejected and reverted because they touch protected files:\n${opts.violations.map((v) => `- ${v.path}: ${v.reason}`).join("\n")}`);
   }
-  if (opts.report && opts.report.exitCode !== 0) parts.push(`Checks still failing (${opts.report.headline}):\n\n${describeFindings(opts.report, 8)}`);
+  if (opts.report && opts.report.exitCode !== 0) {
+    const failing = describeFindings(opts.report, 8);
+    if (failing) parts.push(`Checks still failing (${opts.report.headline}):\n\n${failing}`);
+    // Checks that could not be decided now but were fine before also block verification; name them.
+    const before = new Map((opts.original?.findings ?? []).map((f) => [f.id, f.classification]));
+    const undecided = opts.report.findings.filter((f) => !ACTIONABLE.has(f.classification) && f.classification !== "pass" && f.classification !== "retired" && before.get(f.id) !== f.classification);
+    if (undecided.length) parts.push(`Checks that could not be decided after your change (they were not like this before):\n\n${undecided.slice(0, 8).map((f) => describeFinding(f)).join("\n\n")}`);
+  }
   if (opts.testProblem) parts.push(`The application tests could not run: ${clip(opts.testProblem, 1500)}`);
   for (const t of opts.tests.filter((x) => !x.ok)) parts.push(`Application test command \`${t.command}\` failed (exit ${t.exitCode}${t.timedOut ? ", timed out" : ""}):\n${clip(t.output, 2500)}`);
   parts.push("Continue from where you left off: fix the remaining problems in the application source, following the same rules.");

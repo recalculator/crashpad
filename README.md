@@ -46,7 +46,7 @@ Every check has a deadline, names the file or operation involved, and records ev
 |---|---|---|
 | **1. Database compatibility** | Read queries, write statements, and integrity assertions. New migrations must apply. Migration history must not be rewritten. Query-only changes are checked too. | Two real PostgreSQL databases: the candidate is a `TEMPLATE` clone of the baseline, with only the new migrations applied. Every check runs in a rolled-back transaction. |
 | **2. API contracts** | **Specification comparison:** removed operations; newly required parameters, request fields, or bodies; incompatible request/response field types; removed response fields and statuses; fields that became optional or nullable. **Runtime contract checks:** status codes, headers, and response bodies, validated against the baseline OpenAPI schema. | The spec comparison is static: two OpenAPI documents, no app running. Runtime checks call the running app. The report always says which one produced a finding. |
-| **3. Configuration and startup** | Required variables missing from the test environment, invalid configured values, startup failures, and readiness within a deadline. | Reads the environment contract the repository already declares (`.env.example` in the dotenv-safe convention, or a JSON Schema). Starts the app and polls its health endpoint or port. |
+| **3. Configuration and startup** | Startup failures and readiness within a deadline; required variables missing and invalid configured values, where the repository's contract can say so. | Reads the environment contract the repository already has. A JSON Schema's `required` list is enforced. A `.env.example` only *declares* variables: blank entries are often optional, so a missing value is never reported by itself. The startup check decides, and a newly declared variable without a test value is listed in coverage. Starts the app and polls its health endpoint or port. |
 | **4. Permissions** | Unauthenticated access, normal user vs administrator, and user A reading user B's resources. | Scenarios with test identities and sessions. Every expected status is stated explicitly. Crashpad never infers that an endpoint should be private. This is **permission-regression testing, not a security audit.** |
 | **5. Application workflows** | Multi-step flows such as signup → login → authenticated action, or create → read → update, plus the resulting state and side effects. | Steps can reuse values captured from earlier responses. SQL steps verify stored state, such as audit rows. Every scenario gets a fresh database clone and a fresh app process. |
 
@@ -105,10 +105,11 @@ Discovery supports **one stack: Node.js / TypeScript applications on PostgreSQL*
 |---|---|
 | Package manager | `package-lock.json` / `npm-shrinkwrap.json` → `npm ci`; `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`; `yarn.lock` → `yarn install --frozen-lockfile` (`--immutable` with `.yarnrc.yml`). Bun is reported as unsupported. |
 | Build / start / tests | The `build`, `start`, `typecheck` (or `type-check`, `check-types`, `tsc`), and `test` scripts. npm's placeholder test script is ignored. |
-| Migrations | Prisma (`prisma/migrations/*/migration.sql` with a `postgresql` datasource); Drizzle (`drizzle/` plus `meta/_journal.json`); plain SQL directories (`db/migrations`, `migrations`, `sql/migrations`, `database/migrations`). dbmate up/down files and JS/TS migrations (Knex, node-pg-migrate, TypeORM) are reported as unsupported rather than run incorrectly. |
+| Migrations | Prisma (`prisma/migrations/*/migration.sql` with a `postgresql` datasource); Drizzle (`drizzle/` plus `meta/_journal.json`); plain SQL directories (`db/migrations`, `migrations`, `sql/migrations`, `database/migrations`). dbmate up/down files and JS/TS migrations (Knex, node-pg-migrate, TypeORM) are reported as unsupported rather than run incorrectly. If a project uses PostgreSQL but has no migration history (for example `drizzle-kit push` or `prisma db push`), discovery says so. |
 | Schema, seed, checks | A SQL seed (`db/seed.sql`, `seed.sql`, …) and `crashpad.checks.json`. A `schema.sql` is **not** assumed to be a bootstrap schema, because it may already contain the migrations. By default, migrations apply to an empty database. |
 | OpenAPI | `openapi.{yaml,yml,json}` in the project root, `openapi/`, `api/`, `docs/`, or `spec/`. Only OpenAPI 3.0/3.1; Swagger 2 is reported. |
-| Environment contract | `.env.example`, `.env.sample`, `.env.template` (every key is required, following the dotenv-safe convention), or `env.schema.json`. Crashpad **never reads `.env`**. |
+| Environment contract | `.env.example`, `.env.sample`, `.env.template` (declared variables; not treated as required), or `env.schema.json` (its `required` list is enforced). Crashpad **never reads `.env`** or `.env.local`. |
+| Port variable | `PORT`, or the one `*_PORT` variable the env example declares, including a commented default such as `# APP_PORT=8787`. If there is none, or more than one, Crashpad says it assumes `PORT` and asks for `app.portEnv`. |
 | Readiness | A `GET` health path (`/health`, `/healthz`, `/ready`, …) declared in the OpenAPI document. Otherwise readiness means the port accepts connections, and the report says so. |
 | Runtime scenarios | `crashpad.http.json`. Permission and workflow expectations can't be discovered, so without this file those areas are reported as not configured. |
 
@@ -205,7 +206,13 @@ crashpad repair --base main --branch feature --agent claude --publish --repo own
    - Claude works in an isolated clone at that commit, with its Git remote removed.
    - It receives the failing findings, their evidence, how they were reproduced, and the rules.
    - It may inspect and edit application source, and run the app's own test commands.
-4. **Independent verification after every attempt.** Crashpad re-runs every check against the **original commit's expectations**, with the baseline unchanged, and runs the app's tests. A test command that already failed before the change is reported and not counted. Failures are fed back into the same Claude session for the next attempt.
+4. **Independent verification after every attempt.** Crashpad re-runs every check against the **original commit's expectations**, with the baseline unchanged, and runs the app's tests. A repair is verified when:
+   - every regression is gone;
+   - nothing newly fails or becomes undecided;
+   - something passes;
+   - every app test command that passes **at the baseline** passes again.
+
+   Checks that were already undecided before the change (for example, a baseline failure) may remain and are reported. A test command that already fails at the baseline is reported and not counted. Failures, including newly undecided checks, are fed back into the same Claude session for the next attempt.
 5. **Stop or publish.** Crashpad stops after `--max-attempts`, the `--deadline-min` deadline, cancellation (Ctrl-C), or a terminal agent error. A draft PR is opened only for a verified result.
 
 **A successful Claude exit proves nothing on its own.** An attempt where Claude reports success but verification fails is rejected. So is an attempt that changes nothing.
@@ -296,7 +303,7 @@ The composite action ([`action.yml`](action.yml)) runs `crashpad check` in a wor
 - **One supported stack for discovery** (Node.js/TypeScript + PostgreSQL). Other stacks can be configured explicitly only where the checks are stack-neutral: SQL migrations, OpenAPI, and HTTP scenarios.
 - **No query discovery.** Only configured SQL fixtures are checked. Permission and workflow expectations must be written down: they come from explicit scenarios, never from inference. Business rules are only checked through the assertions you write.
 - **Spec comparison** covers the rules listed above. `oneOf`/`anyOf` and response enum changes are not compared.
-- **Runtime checks** assume an HTTP server that reads its port from an environment variable (`PORT` by default).
+- **Runtime checks** assume an HTTP server that reads its port from an environment variable (`PORT`, a discovered `*_PORT`, or `app.portEnv`).
 - **App tests during repair** run without a database.
 - **No performance, locking, or downtime analysis, and no security audit.**
 - **The companion must be running** for App-driven checks.

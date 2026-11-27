@@ -3,9 +3,11 @@ import type { Source } from "../source.ts";
 
 /**
  * Environment contracts, read from the repository:
- * - `dotenv-example`: a `.env.example`-style file. Following the dotenv-safe
- *   convention, every key it lists is required. Its values are committed
- *   examples, never secrets, and may be used as test values.
+ * - `dotenv-example`: a `.env.example`-style file. It DECLARES variables, but it
+ *   cannot say which are required: many projects list optional keys with blank
+ *   values. So Crashpad never reports a declared variable as "missing"; whether
+ *   the application actually needs it is decided by the startup check. Non-empty
+ *   values are committed examples, never secrets, and may be used as test values.
  * - `json-schema`: a JSON Schema object (`required`, `properties` with types,
  *   enums, patterns). Values are coerced from strings the way apps read them.
  *
@@ -22,7 +24,10 @@ export interface EnvVarDecl {
 export interface EnvSchema {
   path: string;
   format: "dotenv-example" | "json-schema";
+  /** Variables that must be set (JSON Schema `required` only). */
   required: EnvVarDecl[];
+  /** Every variable the file declares (dotenv: active lines; JSON Schema: properties and required). */
+  declared: EnvVarDecl[];
   /** Committed example values (dotenv-example only). */
   examples: Record<string, string>;
   jsonSchema?: Record<string, unknown>;
@@ -30,11 +35,17 @@ export interface EnvSchema {
 
 export type EnvSchemaLoad = { ok: true; schema: EnvSchema } | { ok: false; path: string; missing: boolean; message: string };
 
-export function parseDotenvExample(text: string): EnvVarDecl[] {
+/** Active `NAME=value` lines. With `commented`, also `# NAME=value` lines (documented defaults). */
+export function parseDotenvExample(text: string, opts: { commented?: boolean } = {}): EnvVarDecl[] {
   const out: EnvVarDecl[] = [];
   text.split(/\r?\n/).forEach((raw, i) => {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) return;
+    let line = raw.trim();
+    if (!line) return;
+    if (line.startsWith("#")) {
+      if (!opts.commented) return;
+      line = line.replace(/^#+\s*/, "");
+      if (!/^(?:export\s+)?[A-Z_][A-Z0-9_]*=/.test(line)) return;
+    }
     const m = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
     if (!m) return;
     let v = m[2]!;
@@ -53,7 +64,7 @@ export async function loadEnvSchema(source: Source, ref: { path: string; format:
     const decls = parseDotenvExample(text);
     const examples: Record<string, string> = {};
     for (const d of decls) if (d.example !== undefined) examples[d.name] = d.example;
-    return { ok: true, schema: { path: ref.path, format: ref.format, required: decls, examples } };
+    return { ok: true, schema: { path: ref.path, format: ref.format, required: [], declared: decls, examples } };
   }
   let json: any;
   try {
@@ -65,7 +76,8 @@ export async function loadEnvSchema(source: Source, ref: { path: string; format:
   const lines = text.split(/\r?\n/);
   const lineOf = (name: string) => Math.max(1, lines.findIndex((l) => l.includes(`"${name}"`)) + 1);
   const required: EnvVarDecl[] = (Array.isArray(json.required) ? json.required : []).filter((n: unknown) => typeof n === "string").map((n: string) => ({ name: n, line: lineOf(n) }));
-  return { ok: true, schema: { path: ref.path, format: ref.format, required, examples: {}, jsonSchema: json } };
+  const declared = [...new Set([...required.map((d) => d.name), ...Object.keys(json.properties ?? {})])].map((n) => required.find((d) => d.name === n) ?? { name: n, line: lineOf(n) });
+  return { ok: true, schema: { path: ref.path, format: ref.format, required, declared, examples: {}, jsonSchema: json } };
 }
 
 export interface EnvIssue {
@@ -79,7 +91,7 @@ export interface EnvIssue {
 export function validateEnv(schema: EnvSchema, env: Record<string, string>): EnvIssue[] {
   const issues: EnvIssue[] = [];
   for (const d of schema.required) {
-    if (env[d.name] === undefined || (schema.format === "dotenv-example" && env[d.name] === "")) {
+    if (env[d.name] === undefined) {
       issues.push({ name: d.name, kind: "missing", message: `${d.name} is required by ${schema.path}:${d.line} but has no value in the test environment`, line: d.line });
     }
   }

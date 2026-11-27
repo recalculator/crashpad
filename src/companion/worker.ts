@@ -142,7 +142,7 @@ export async function runJob(o: WorkerOptions, job: LeasedJob): Promise<{ status
         files: result.files.map((f) => ({ path: f.path, after: f.after })),
         title: repairTitle(result, job.headRef),
         body: repairBody(result, { branch: job.headRef, repairId }),
-        verification: { exitCode: result.verification!.exitCode, headline: result.verification!.headline },
+        verification: { verified: true, exitCode: result.verification!.exitCode, headline: result.verification!.headline },
         repairId,
       }))!;
     } catch (err) {

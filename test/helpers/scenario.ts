@@ -8,6 +8,7 @@ export const STOREFRONT = path.join(FIXTURES, "storefront");
 export const SCENARIOS = path.join(FIXTURES, "scenarios");
 export const NOTES_API = path.join(FIXTURES, "notes-api");
 export const NOTES_SCENARIOS = path.join(FIXTURES, "notes-scenarios");
+export const OPTIONAL_ENV_APP = path.join(FIXTURES, "optional-env-app");
 
 export interface Scenario {
   name: string;
@@ -23,6 +24,10 @@ export interface Scenario {
   expectErrorCode?: Record<string, string>;
   expectOutcome?: string;
   expectEdited?: string[];
+  /** Coverage status per area when not "complete". */
+  expectCoverage?: Record<string, string>;
+  /** Text expected in an area's "not covered" list. */
+  expectMissing?: Record<string, string>;
   /** Files deleted on the change branch. */
   remove?: string[];
 }
@@ -78,6 +83,6 @@ export function buildScenarioRepo(s: Scenario, parent = fs.mkdtempSync(path.join
     fs.writeFileSync(mp, JSON.stringify(manifest, null, 2) + "\n");
   }
   sh(repo, "git", ["add", "-A"]);
-  sh(repo, "git", ["commit", "-q", "-m", `Change: ${s.title}`], GIT_ENV);
+  sh(repo, "git", ["commit", "-q", "--allow-empty", "-m", `Change: ${s.title || s.name}`], GIT_ENV);
   return repo;
 }

@@ -410,11 +410,11 @@ export class CrashpadService {
   }
 
   /** Publish a fix verified on the companion: a new branch whose parent is the exact head commit, then a draft PR. */
-  async publishFix(c: Companion, id: string, body: { files: Array<{ path: string; after: string | null }>; title: string; body: string; verification: { exitCode: number; headline: string }; repairId: string }): Promise<object> {
+  async publishFix(c: Companion, id: string, body: { files: Array<{ path: string; after: string | null }>; title: string; body: string; verification: { verified: boolean; exitCode: number; headline: string }; repairId: string }): Promise<object> {
     const job = this.owned(c, id);
     if (job.kind !== "repair") throw new HttpError(400, "only repair jobs publish fixes");
     if (job.status !== "leased") throw new HttpError(409, `job is ${job.status}; not publishing`);
-    if (body.verification?.exitCode !== 0) throw new HttpError(422, "only a verified change (exit 0) is published");
+    if (body.verification?.verified !== true) throw new HttpError(422, "only a change the companion verified is published");
     if (!job.repairable || job.headRef.startsWith(FIX_BRANCH_PREFIX)) throw new HttpError(403, "this pull request may not be repaired");
     if (!body.files?.length) throw new HttpError(422, "no files");
     const pr = await this.gh<any>(job, "GET", `/repos/${job.repo}/pulls/${job.prNumber}`);

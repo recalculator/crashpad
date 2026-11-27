@@ -9,7 +9,9 @@ import { repair, type RepairOptions } from "../../src/repair/loop.ts";
 import { isCrashpadFix } from "../../src/commands/repair.ts";
 import type { Agent } from "../../src/repair/agent.ts";
 import { DB_URL, tempDir } from "../helpers/project.ts";
-import { buildScenarioRepo, loadScenarios, NOTES_API, NOTES_SCENARIOS } from "../helpers/scenario.ts";
+import { buildScenarioRepo, loadScenarios, NOTES_API, NOTES_SCENARIOS, OPTIONAL_ENV_APP } from "../helpers/scenario.ts";
+import { verifiedAgainst } from "../../src/repair/loop.ts";
+import type { SuiteReport } from "../../src/suite/types.ts";
 import { FakeGitHub } from "../helpers/fake-github.ts";
 
 /**
@@ -177,5 +179,34 @@ describe("repair loop with independent verification (real checks, mock agent)", 
     await git(repo, ["fetch", "-q", "origin", `${pub.branch}:${pub.branch}`]);
     expect(await isCrashpadFix(repo, pub.branch, await gitOut(repo, ["rev-parse", pub.branch!]))).toMatch(/Crashpad fix branch/);
     expect(await isCrashpadFix(repo, "feature", await gitOut(repo, ["rev-parse", pub.branch!]))).toMatch(/created by Crashpad/);
+  });
+});
+
+describe("repair verification rules found in the real-project trial (regression coverage)", () => {
+  it("requires application tests that the change broke to pass again (only baseline failures are excused)", async () => {
+    const repo = buildScenarioRepo(
+      { name: "rename", dir: OPTIONAL_ENV_APP, title: "", description: "", mode: "check", expectedExit: 1, replace: [{ file: "lib.js", find: "export function greet(", with: "export function sayHello(" }] },
+      tempDir(),
+      OPTIONAL_ENV_APP,
+    );
+    const { agent, calls } = fakeAgent("fix-import-then-alias");
+    const r = await repair(await opts(repo, agent, { databaseUrl: "postgres://127.0.0.1:1/none" }));
+    expect(r.preexistingTestFailures).toEqual([]);
+    // Attempt 1 makes the app start, but `npm test` still fails: rejected (before the fix it was accepted).
+    expect(r.attempts[0]).toMatchObject({ verdict: "rejected", reason: "application tests failed" });
+    expect(r.attempts[0]!.tests?.results.map((t) => t.ok)).toEqual([false]);
+    expect(calls().filter((c) => c.args[0] === "-p")[1].args[1]).toMatch(/Application test command `npm run --silent test` failed/);
+    expect(r.outcome).toBe("verified");
+    expect(r.files.map((f) => f.path).sort()).toEqual(["lib.js", "server.js"]);
+  });
+
+  it("accepts a repair when the only remaining undecided checks were already undecided before it", () => {
+    const f = (id: string, classification: string) => ({ id, classification }) as SuiteReport["findings"][number];
+    const rep = (findings: SuiteReport["findings"]) => ({ problems: [], findings }) as unknown as SuiteReport;
+    const original = rep([f("config:startup", "regression"), f("config:env:X", "baseline-failure"), f("api:a", "pass")]);
+    expect(verifiedAgainst(original, rep([f("config:startup", "pass"), f("config:env:X", "baseline-failure"), f("api:a", "pass")]))).toMatchObject({ ok: true });
+    expect(verifiedAgainst(original, rep([f("config:startup", "pass"), f("config:env:X", "baseline-failure"), f("api:a", "inconclusive")])).ok).toBe(false);
+    expect(verifiedAgainst(original, rep([f("config:startup", "regression"), f("api:a", "pass")])).ok).toBe(false);
+    expect(verifiedAgainst(original, rep([f("config:env:X", "baseline-failure")])).ok).toBe(false);
   });
 });

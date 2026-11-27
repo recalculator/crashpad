@@ -1,11 +1,13 @@
 {
   "title": "New required configuration",
-  "description": "The server now requires PAYMENTS_API_KEY, declared in .env.example without a value. Crashpad has no test value for it and never invents one.",
+  "description": "The server now requires PAYMENTS_API_KEY, declared in .env.example without a value. A dotenv example cannot say a variable is required, so Crashpad does not flag the blank value itself; the startup check catches the crash, and the new variable is listed as needing a test value. Crashpad never invents one.",
   "mode": "check",
   "expectedExit": 1,
   "replace": [
     { "file": "server.js", "find": "const required = [\"PORT\", \"DATABASE_URL\", \"SESSION_SECRET\"];", "with": "const required = [\"PORT\", \"DATABASE_URL\", \"SESSION_SECRET\", \"PAYMENTS_API_KEY\"];" },
     { "file": ".env.example", "find": "SESSION_SECRET=example-session-secret-not-real\n", "with": "SESSION_SECRET=example-session-secret-not-real\nPAYMENTS_API_KEY=\n" }
   ],
-  "expect": { "config:env:PAYMENTS_API_KEY": "regression", "config:startup": "regression", "permissions:admin-users-admin-only": "skipped", "database:list-products": "pass" }
+  "expect": { "config:startup": "regression", "config:env:schema": "pass", "permissions:admin-users-admin-only": "skipped", "database:list-products": "pass" },
+  "expectCoverage": { "config": "partial" },
+  "expectMissing": { "config": "PAYMENTS_API_KEY is newly declared in .env.example:6 and has no test value" }
 }

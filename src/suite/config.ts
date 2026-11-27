@@ -29,7 +29,7 @@ export const ApiConfigSchema = z
 export const EnvSchemaRef = z
   .object({
     path: relPath,
-    /** `dotenv-example`: every key listed is required (dotenv-safe convention). `json-schema`: a JSON Schema object. */
+    /** `dotenv-example`: declares variables (never treated as required; startup decides). `json-schema`: a JSON Schema whose `required` list is enforced. */
     format: z.enum(["dotenv-example", "json-schema"]),
   })
   .strict();
