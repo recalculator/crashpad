@@ -1,8 +1,8 @@
 -- Checkout / order summary: one row per line item, in SKU order.
 SELECT o.id AS order_id,
        o.status,
-       c.name AS customer_name,
-       'Thanks for your order, ' || c.name AS greeting, -- the literal and this comment mention name on purpose
+       c.full_name AS customer_name,
+       'Thanks for your order, ' || c.full_name AS greeting, -- the literal and this comment mention name on purpose
        i.sku,
        i.quantity,
        i.unit_price,
