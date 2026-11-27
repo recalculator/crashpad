@@ -1,0 +1,12 @@
+{
+  "name": "crashpad-example-storefront",
+  "private": true,
+  "type": "module",
+  "description": "Sample storefront backend used by Crashpad's demos. Runs on Node's built-in TypeScript type stripping.",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": { "pg": "^8.16.0" }
+}
