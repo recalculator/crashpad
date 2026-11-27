@@ -4,11 +4,13 @@ import { UsageError, type Values } from "../cli.ts";
 import { FetchGitHubApi, GitHubHttpError, parseRepo, resolveToken, type GitHubApi } from "../github/client.ts";
 import { COMMENT_MARKER, renderMarkdown } from "../report/markdown.ts";
 import { REPORT_SCHEMA, type Report } from "../report/types.ts";
+import { renderSuiteMarkdown } from "../suite/markdown.ts";
+import { SUITE_REPORT_SCHEMA, type SuiteReport } from "../suite/types.ts";
 
 const MAX_COMMENT = 60_000;
 
-export function commentBody(report: Report, runUrl?: string): string {
-  let md = renderMarkdown(report, { title: "Crashpad database check", maxDetails: 8 });
+export function commentBody(report: Report | SuiteReport, runUrl?: string): string {
+  let md = report.schemaVersion === SUITE_REPORT_SCHEMA ? renderSuiteMarkdown(report as SuiteReport, { maxDetails: 8 }) : renderMarkdown(report as Report, { title: "Crashpad database check", maxDetails: 8 });
   const footer = runUrl ? `\n[Full report and artifacts](${runUrl})\n` : "";
   if (md.length + footer.length > MAX_COMMENT) md = md.slice(0, MAX_COMMENT - footer.length - 200) + "\n\n…truncated; see the full report artifact.\n";
   return `${COMMENT_MARKER}\n${md}${footer}`;
@@ -30,8 +32,9 @@ export async function cmdComment(v: Values, cwd: string, api?: GitHubApi): Promi
   const { owner, repo } = parseRepo(v.repo);
   const pr = Number(v.pr);
   if (!Number.isInteger(pr) || pr <= 0) throw new UsageError("--pr must be a pull request number");
-  const report = JSON.parse(await fs.readFile(path.resolve(cwd, v.report), "utf8")) as Report;
-  if (report.schemaVersion !== REPORT_SCHEMA) throw new UsageError(`unsupported report schema ${report.schemaVersion}`);
+  const report = JSON.parse(await fs.readFile(path.resolve(cwd, v.report), "utf8")) as Report | SuiteReport;
+  const schema = (report as { schemaVersion: string }).schemaVersion;
+  if (schema !== REPORT_SCHEMA && schema !== SUITE_REPORT_SCHEMA) throw new UsageError(`unsupported report schema ${schema}`);
   const runUrl =
     process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY && process.env.GITHUB_RUN_ID
       ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`

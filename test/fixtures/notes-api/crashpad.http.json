@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "identities": {
+    "alice": {
+      "steps": [
+        { "request": { "method": "POST", "path": "/signup", "json": { "email": "alice-{{$run}}@example.test", "password": "alice-pass", "name": "Alice" } }, "expect": { "status": 201 }, "capture": { "id": "body.id" } },
+        { "request": { "method": "POST", "path": "/login", "json": { "email": "alice-{{$run}}@example.test", "password": "alice-pass" } }, "expect": { "status": 200 }, "capture": { "token": "body.token" } }
+      ],
+      "headers": { "authorization": "Bearer {{alice.token}}" }
+    },
+    "bob": {
+      "steps": [
+        { "request": { "method": "POST", "path": "/signup", "json": { "email": "bob-{{$run}}@example.test", "password": "bob-pass", "name": "Bob" } }, "expect": { "status": 201 } },
+        { "request": { "method": "POST", "path": "/login", "json": { "email": "bob-{{$run}}@example.test", "password": "bob-pass" } }, "expect": { "status": 200 }, "capture": { "token": "body.token" } }
+      ],
+      "headers": { "authorization": "Bearer {{bob.token}}" }
+    },
+    "admin": {
+      "steps": [
+        { "request": { "method": "POST", "path": "/login", "json": { "email": "admin@example.test", "password": "admin-pass" } }, "expect": { "status": 200 }, "capture": { "token": "body.token" } }
+      ],
+      "headers": { "authorization": "Bearer {{admin.token}}" }
+    }
+  },
+  "checks": [
+    {
+      "id": "me-matches-contract",
+      "area": "api",
+      "description": "GET /me returns the documented shape and headers",
+      "steps": [
+        { "as": "alice", "request": { "method": "GET", "path": "/me" }, "expect": { "status": 200, "contract": true, "headers": { "content-type": "application/json*" }, "json": { "name": "Alice", "role": "user" } } }
+      ]
+    },
+    {
+      "id": "note-visible-to-owner-and-admin",
+      "area": "permissions",
+      "description": "A note is visible to its owner and admins only",
+      "setup": [
+        { "as": "alice", "request": { "method": "POST", "path": "/notes", "json": { "title": "private" } }, "expect": { "status": 201 }, "capture": { "noteId": "body.id" } }
+      ],
+      "request": { "method": "GET", "path": "/notes/{{noteId}}" },
+      "expect": { "anonymous": 401, "alice": 200, "bob": [403, 404], "admin": 200 }
+    },
+    {
+      "id": "admin-users-admin-only",
+      "area": "permissions",
+      "description": "Only administrators can list users",
+      "request": { "method": "GET", "path": "/admin/users" },
+      "expect": { "anonymous": 401, "alice": 403, "admin": 200 }
+    },
+    {
+      "id": "products-public",
+      "area": "permissions",
+      "description": "The product list is intentionally public",
+      "request": { "method": "GET", "path": "/products" },
+      "expect": { "anonymous": 200 }
+    },
+    {
+      "id": "signup-login-create-update",
+      "area": "workflows",
+      "description": "Sign up, log in, create a note, read it, rename it, and check the audit trail",
+      "steps": [
+        { "name": "signup", "request": { "method": "POST", "path": "/signup", "json": { "email": "carol-{{$run}}@example.test", "password": "carol-pass", "name": "Carol" } }, "expect": { "status": 201 }, "capture": { "userId": "body.id" } },
+        { "name": "login", "request": { "method": "POST", "path": "/login", "json": { "email": "carol-{{$run}}@example.test", "password": "carol-pass" } }, "expect": { "status": 200 }, "capture": { "token": "body.token" } },
+        { "name": "create", "request": { "method": "POST", "path": "/notes", "headers": { "authorization": "Bearer {{token}}" }, "json": { "title": "draft", "body": "hello" } }, "expect": { "status": 201, "json": { "title": "draft", "ownerId": "{{userId}}" } }, "capture": { "noteId": "body.id" } },
+        { "name": "read", "request": { "method": "GET", "path": "/notes/{{noteId}}", "headers": { "authorization": "Bearer {{token}}" } }, "expect": { "status": 200, "json": { "title": "draft", "body": "hello" } } },
+        { "name": "update", "request": { "method": "PATCH", "path": "/notes/{{noteId}}", "headers": { "authorization": "Bearer {{token}}" }, "json": { "title": "final" } }, "expect": { "status": 200, "json": { "title": "final" } } },
+        { "name": "read back", "request": { "method": "GET", "path": "/notes/{{noteId}}", "headers": { "authorization": "Bearer {{token}}" } }, "expect": { "status": 200, "json": { "title": "final" } } },
+        { "name": "stored title", "sql": "SELECT title FROM notes WHERE id = $1", "params": ["{{noteId}}"], "expect": { "rows": [["final"]] } },
+        { "name": "audit trail", "sql": "SELECT string_agg(action, ',' ORDER BY id) FROM audit_log WHERE subject_id = $1", "params": ["{{noteId}}"], "expect": { "rows": [["note.created,note.updated"]] } }
+      ]
+    }
+  ]
+}

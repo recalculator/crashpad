@@ -14,6 +14,8 @@ export interface Source {
   readFile(rel: string): Promise<string | null>;
   /** File names (not subdirectories) directly inside `rel`, or null if it is not a directory. */
   listFiles(rel: string): Promise<string[] | null>;
+  /** Subdirectory names directly inside `rel`, or null if it is not a directory. */
+  listDirs(rel: string): Promise<string[] | null>;
 }
 
 /** Files on disk under a root directory. Symlinks that resolve outside the root are refused. */
@@ -60,6 +62,15 @@ export class FsSource implements Source {
     const entries = await fs.readdir(real, { withFileTypes: true });
     return entries.filter((e) => e.isFile()).map((e) => e.name).sort();
   }
+
+  async listDirs(rel: string): Promise<string[] | null> {
+    const real = await this.resolve(rel);
+    if (!real) return null;
+    const stat = await fs.stat(real);
+    if (!stat.isDirectory()) return null;
+    const entries = await fs.readdir(real, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory() && e.name !== ".git").map((e) => e.name).sort();
+  }
 }
 
 /** Files as committed at a specific Git commit. Symlinks and submodules are refused. */
@@ -93,7 +104,7 @@ export class GitSource implements Source {
     return stdout;
   }
 
-  async listFiles(rel: string): Promise<string[] | null> {
+  private async tree(rel: string): Promise<RegExpMatchArray[] | null> {
     const norm = normalizeRepoPath(rel);
     const e = await this.entry(norm);
     if (!e || e.type !== "tree") return null;
@@ -109,9 +120,19 @@ export class GitSource implements Source {
       .split("\0")
       .filter((l) => l.length > 0)
       .map((l) => l.match(/^(\d+) (\w+) [0-9a-f]+\t(.*)$/s))
-      .filter((m): m is RegExpMatchArray => !!m && m[2] === "blob" && m[1] !== "120000")
-      .map((m) => m[3]!)
-      .sort();
+      .filter((m): m is RegExpMatchArray => !!m);
+  }
+
+  async listFiles(rel: string): Promise<string[] | null> {
+    const t = await this.tree(rel);
+    if (!t) return null;
+    return t.filter((m) => m[2] === "blob" && m[1] !== "120000").map((m) => m[3]!).sort();
+  }
+
+  async listDirs(rel: string): Promise<string[] | null> {
+    const t = await this.tree(rel);
+    if (!t) return null;
+    return t.filter((m) => m[2] === "tree").map((m) => m[3]!).sort();
   }
 }
 
@@ -133,5 +154,8 @@ export class OverlaySource implements Source {
   async listFiles(rel: string): Promise<string[] | null> {
     // Overlays only replace existing files; they never add or remove entries.
     return this.base.listFiles(rel);
+  }
+  async listDirs(rel: string): Promise<string[] | null> {
+    return this.base.listDirs(rel);
   }
 }

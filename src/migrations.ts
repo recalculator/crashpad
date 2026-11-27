@@ -21,9 +21,24 @@ export function compareNames(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-async function listMigrations(source: Source, dir: string): Promise<MigrationFile[]> {
-  const names = (await source.listFiles(dir)) ?? [];
+/**
+ * Ordered migrations of a project.
+ * - `sql-dir`: `<dir>/*.sql`, byte-wise filename order.
+ * - `prisma`: `<dir>/<name>/migration.sql`, byte-wise directory-name order (Prisma's
+ *   timestamped names sort chronologically). The migration's name is its directory.
+ */
+export async function listMigrations(source: Source, project: Pick<LoadedProject, "paths" | "migrationFormat">): Promise<MigrationFile[]> {
+  const dir = project.paths.migrations;
   const out: MigrationFile[] = [];
+  if (project.migrationFormat === "prisma") {
+    for (const name of ((await source.listDirs(dir)) ?? []).sort(compareNames)) {
+      const path = `${dir}/${name}/migration.sql`;
+      const sql = await source.readFile(path);
+      if (sql !== null) out.push({ name, path, sql });
+    }
+    return out;
+  }
+  const names = (await source.listFiles(dir)) ?? [];
   for (const name of names.filter((n) => n.endsWith(".sql")).sort(compareNames)) {
     const path = `${dir}/${name}`;
     const sql = await source.readFile(path);
@@ -43,8 +58,8 @@ export async function planMigrations(
   candProject: LoadedProject,
   candSource: Source,
 ): Promise<MigrationPlan> {
-  const baseline = await listMigrations(baseSource, baseProject.paths.migrations);
-  const candidate = await listMigrations(candSource, candProject.paths.migrations);
+  const baseline = await listMigrations(baseSource, baseProject);
+  const candidate = await listMigrations(candSource, candProject);
   const baseByName = new Map(baseline.map((m) => [m.name, m]));
   const candByName = new Map(candidate.map((m) => [m.name, m]));
   const history: HistoryIssue[] = [];

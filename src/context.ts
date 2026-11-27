@@ -5,6 +5,7 @@ import { normalizeRepoPath } from "./paths.ts";
 import { FsSource, GitSource, type Source } from "./source.ts";
 import { PgServer } from "./db/postgres.ts";
 import type { RunInput } from "./runner.ts";
+import type { SuiteInput } from "./suite/runner.ts";
 
 export const DEFAULT_DATABASE_URL = "postgres://localhost:5432/postgres";
 
@@ -59,5 +60,17 @@ export async function resolveContext(opts: ContextOptions): Promise<RunContext> 
       candidate,
       server: new PgServer(databaseUrl(opts.databaseUrl)),
     },
+  };
+}
+
+/** Suite input for the same baseline/candidate as `ctx`. */
+export function suiteInputFrom(ctx: RunContext, databaseUrlValue: string): Omit<SuiteInput, "discover" | "settings"> {
+  const i = ctx.input;
+  return {
+    repoRoot: ctx.repoRoot,
+    projectDir: ctx.projectDir,
+    base: i.base,
+    candidate: { label: i.candidate.label, commit: i.candidate.commit, source: i.candidate.source, code: { root: ctx.repoRoot, commit: ctx.workingTree ? null : i.candidate.commit } },
+    databaseUrl: databaseUrlValue,
   };
 }

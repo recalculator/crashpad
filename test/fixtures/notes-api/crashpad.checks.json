@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "checks": [
+    { "id": "list-products", "category": "read", "source": "sql/list_products.sql", "ordered": true },
+    { "id": "create-note", "category": "write", "source": "sql/create_note.sql", "params": ["1", "Groceries", "milk"], "expectRows": 1, "ignoreColumns": ["id"] },
+    { "id": "no-negative-prices", "category": "assertion", "sql": "SELECT NOT EXISTS (SELECT 1 FROM products WHERE price < 0)" },
+    { "id": "notes-have-owners", "category": "assertion", "sql": "SELECT NOT EXISTS (SELECT 1 FROM notes n LEFT JOIN users u ON u.id = n.owner_id WHERE u.id IS NULL)" }
+  ]
+}

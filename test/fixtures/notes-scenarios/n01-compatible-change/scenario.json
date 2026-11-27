@@ -1,0 +1,11 @@
+{
+  "title": "Compatible change",
+  "description": "Adds a nullable column and an optional response field. Every area should pass.",
+  "mode": "check",
+  "expectedExit": 0,
+  "replace": [
+    { "file": "server.js", "find": "return send(res, 200, { id: user.id, email: user.email, name: user.name, role: user.role });", "with": "return send(res, 200, { id: user.id, email: user.email, name: user.name, role: user.role, locale: \"en\" });" },
+    { "file": "openapi.yaml", "find": "        role: { type: string, enum: [user, admin] }", "with": "        role: { type: string, enum: [user, admin] }\n        locale: { type: string }" }
+  ],
+  "expect": { "database:migration:db/migrations/002_note_pinned.sql": "pass", "api:me-matches-contract": "pass", "permissions:note-visible-to-owner-and-admin": "pass", "workflows:signup-login-create-update": "pass", "config:startup": "pass" }
+}

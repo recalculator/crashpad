@@ -1,0 +1,11 @@
+{
+  "title": "New required configuration",
+  "description": "The server now requires PAYMENTS_API_KEY, declared in .env.example without a value. Crashpad has no test value for it and never invents one.",
+  "mode": "check",
+  "expectedExit": 1,
+  "replace": [
+    { "file": "server.js", "find": "const required = [\"PORT\", \"DATABASE_URL\", \"SESSION_SECRET\"];", "with": "const required = [\"PORT\", \"DATABASE_URL\", \"SESSION_SECRET\", \"PAYMENTS_API_KEY\"];" },
+    { "file": ".env.example", "find": "SESSION_SECRET=example-session-secret-not-real\n", "with": "SESSION_SECRET=example-session-secret-not-real\nPAYMENTS_API_KEY=\n" }
+  ],
+  "expect": { "config:env:PAYMENTS_API_KEY": "regression", "config:startup": "regression", "permissions:admin-users-admin-only": "skipped", "database:list-products": "pass" }
+}

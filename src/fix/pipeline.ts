@@ -6,6 +6,7 @@ import { runChecks, type RunInput, type RunResult } from "../runner.ts";
 import { OverlaySource, type Source } from "../source.ts";
 import { VERSION } from "../version.ts";
 import { sha256, unifiedPatch } from "./patch.ts";
+import { listMigrations } from "../migrations.ts";
 import { RenameProposer, type Proposal, type Proposer, type Refusal } from "./proposer.ts";
 import { renderPrBody, prTitle } from "./pr-body.ts";
 import type { ColumnRename } from "./renames.ts";
@@ -55,9 +56,10 @@ const notPassing = (r: Report) => r.checks.filter((c) => c.classification !== "p
  * candidate input file (config, manifest, schema, seed, migrations, fixture sources).
  */
 export async function inputsDigest(baseCommit: string, project: LoadedProject, source: Source, fixtures: Map<string, Fixture>): Promise<string> {
-  const paths = new Set<string>([project.configPath, project.manifestPath, project.paths.schema]);
+  const paths = new Set<string>([project.configPath, project.manifestPath]);
+  if (project.paths.schema) paths.add(project.paths.schema);
   if (project.paths.seed) paths.add(project.paths.seed);
-  for (const name of (await source.listFiles(project.paths.migrations)) ?? []) paths.add(`${project.paths.migrations}/${name}`);
+  for (const m of await listMigrations(source, project)) paths.add(m.path);
   for (const f of fixtures.values()) if (f.origin.kind === "file") paths.add(f.origin.path);
   const entries: string[] = [`base:${baseCommit}`];
   for (const p of [...paths].sort()) {

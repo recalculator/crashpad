@@ -1,0 +1,11 @@
+{
+  "title": "Removed endpoint",
+  "description": "GET /admin/users is removed from the code and the contract.",
+  "mode": "check",
+  "expectedExit": 1,
+  "replace": [
+    { "file": "server.js", "find": "  if (method === \"GET\" && path === \"/admin/users\") {", "with": "  if (false) {" },
+    { "file": "openapi.yaml", "find": "  /admin/users:\n    get:\n      responses:\n        \"200\":\n          description: All users (admin only)\n          content:\n            application/json:\n              schema:\n                type: array\n                items:\n                  type: object\n                  required: [id, email, role]\n                  properties:\n                    id: { type: string }\n                    email: { type: string }\n                    role: { type: string }\n", "with": "" }
+  ],
+  "expect": { "api:spec:GET /admin/users:removed-operation:": "regression", "permissions:admin-users-admin-only": "regression", "workflows:signup-login-create-update": "pass" }
+}

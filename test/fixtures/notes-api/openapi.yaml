@@ -1,0 +1,176 @@
+openapi: 3.0.3
+info:
+  title: Notes API (Crashpad test fixture)
+  version: 1.0.0
+security:
+  - bearer: []
+paths:
+  /health:
+    get:
+      security: []
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+  /products:
+    get:
+      security: []
+      responses:
+        "200":
+          description: Public product list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Product" }
+  /signup:
+    post:
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name]
+              properties:
+                email: { type: string }
+                password: { type: string }
+                name: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicUser" }
+  /login:
+    post:
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token]
+                properties:
+                  token: { type: string }
+  /me:
+    get:
+      responses:
+        "200":
+          description: The current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+  /admin/users:
+    get:
+      responses:
+        "200":
+          description: All users (admin only)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, email, role]
+                  properties:
+                    id: { type: string }
+                    email: { type: string }
+                    role: { type: string }
+  /notes:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                body: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Note" }
+  /notes/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      responses:
+        "200":
+          description: The note
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Note" }
+    patch:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Note" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  schemas:
+    Product:
+      type: object
+      required: [id, name, price]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        price: { type: string }
+    PublicUser:
+      type: object
+      required: [id, email, name]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+    Me:
+      type: object
+      required: [id, email, name, role]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [user, admin] }
+    Note:
+      type: object
+      required: [id, ownerId, title, body]
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        title: { type: string }
+        body: { type: string }

@@ -1,0 +1,8 @@
+{
+  "title": "Database rename breaks the application",
+  "description": "A migration renames products.name to title, but the application's SQL still reads name.",
+  "mode": "check",
+  "expectedExit": 1,
+  "expect": { "database:list-products": "regression", "api:smoke:GET /products": "regression", "permissions:products-public": "regression", "workflows:signup-login-create-update": "pass" },
+  "expectErrorCode": { "list-products": "42703" }
+}

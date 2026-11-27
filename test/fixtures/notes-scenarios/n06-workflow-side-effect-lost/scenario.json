@@ -1,0 +1,10 @@
+{
+  "title": "Workflow side effect lost",
+  "description": "Renaming a note no longer writes its audit record. Every response still looks right.",
+  "mode": "check",
+  "expectedExit": 1,
+  "replace": [
+    { "file": "server.js", "find": "      await pool.query(\"INSERT INTO audit_log (actor_id, action, subject_id) VALUES ($1, 'note.updated', $2)\", [user.id, note.id]);\n", "with": "" }
+  ],
+  "expect": { "workflows:signup-login-create-update": "regression", "permissions:note-visible-to-owner-and-admin": "pass", "api:me-matches-contract": "pass" }
+}

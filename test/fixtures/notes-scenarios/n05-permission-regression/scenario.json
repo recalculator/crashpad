@@ -1,0 +1,10 @@
+{
+  "title": "Permission regression",
+  "description": "The ownership check on GET /notes/{id} is dropped, so any signed-in user can read anyone's note.",
+  "mode": "check",
+  "expectedExit": 1,
+  "replace": [
+    { "file": "server.js", "find": "if (!note || (String(note.owner_id) !== user.id && user.role !== \"admin\")) return send(res, 404, { error: \"not found\" });", "with": "if (!note) return send(res, 404, { error: \"not found\" });" }
+  ],
+  "expect": { "permissions:note-visible-to-owner-and-admin": "regression", "permissions:admin-users-admin-only": "pass", "workflows:signup-login-create-update": "pass", "api:me-matches-contract": "pass" }
+}

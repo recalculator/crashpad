@@ -6,6 +6,8 @@ import path from "node:path";
 const FIXTURES = path.resolve(import.meta.dirname, "../fixtures");
 export const STOREFRONT = path.join(FIXTURES, "storefront");
 export const SCENARIOS = path.join(FIXTURES, "scenarios");
+export const NOTES_API = path.join(FIXTURES, "notes-api");
+export const NOTES_SCENARIOS = path.join(FIXTURES, "notes-scenarios");
 
 export interface Scenario {
   name: string;
@@ -21,14 +23,16 @@ export interface Scenario {
   expectErrorCode?: Record<string, string>;
   expectOutcome?: string;
   expectEdited?: string[];
+  /** Files deleted on the change branch. */
+  remove?: string[];
 }
 
-export function loadScenarios(): Scenario[] {
+export function loadScenarios(dir = SCENARIOS): Scenario[] {
   return fs
-    .readdirSync(SCENARIOS)
-    .filter((d) => fs.existsSync(path.join(SCENARIOS, d, "scenario.json")))
+    .readdirSync(dir)
+    .filter((d) => fs.existsSync(path.join(dir, d, "scenario.json")))
     .sort()
-    .map((name) => ({ name, dir: path.join(SCENARIOS, name), ...JSON.parse(fs.readFileSync(path.join(SCENARIOS, name, "scenario.json"), "utf8")) }));
+    .map((name) => ({ name, dir: path.join(dir, name), ...JSON.parse(fs.readFileSync(path.join(dir, name, "scenario.json"), "utf8")) }));
 }
 
 export function sh(cwd: string, cmd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
@@ -50,9 +54,9 @@ function copyDir(src: string, dst: string): void {
  * Build a real Git repository for a scenario: `main` holds the unchanged storefront
  * fixture (the baseline), and branch `change` holds the scenario's edits on top of it.
  */
-export function buildScenarioRepo(s: Scenario, parent = fs.mkdtempSync(path.join(os.tmpdir(), `crashpad-scenario-${s.name}-`))): string {
+export function buildScenarioRepo(s: Scenario, parent = fs.mkdtempSync(path.join(os.tmpdir(), `crashpad-scenario-${s.name}-`)), fixture = STOREFRONT): string {
   const repo = path.join(parent, "repo");
-  copyDir(STOREFRONT, repo);
+  copyDir(fixture, repo);
   fs.writeFileSync(path.join(repo, ".gitignore"), "crashpad-report/\ncrashpad-fix/\n");
   sh(repo, "git", ["init", "-q", "-b", "main"]);
   sh(repo, "git", ["add", "-A"]);
@@ -60,11 +64,12 @@ export function buildScenarioRepo(s: Scenario, parent = fs.mkdtempSync(path.join
   sh(repo, "git", ["switch", "-q", "-c", "change"]);
   const files = path.join(s.dir, "files");
   if (fs.existsSync(files)) copyDir(files, repo);
+  for (const f of s.remove ?? []) fs.rmSync(path.join(repo, f));
   for (const r of s.replace ?? []) {
     const p = path.join(repo, r.file);
     const text = fs.readFileSync(p, "utf8");
     if (!text.includes(r.find)) throw new Error(`${s.name}: ${r.file} does not contain ${JSON.stringify(r.find)}`);
-    fs.writeFileSync(p, text.replace(r.find, r.with));
+    fs.writeFileSync(p, text.split(r.find).join(r.with));
   }
   if (s.addChecks?.length) {
     const mp = path.join(repo, "crashpad.checks.json");

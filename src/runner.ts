@@ -19,6 +19,11 @@ export interface RunInput {
   server: PgServer;
   keepDatabases?: boolean;
   log?: (msg: string) => void;
+  /**
+   * Resolves the database project for a side. Defaults to reading
+   * `crashpad.config.json`; the suite passes discovered/merged configuration.
+   */
+  loadProject?: (source: Source, projectDir: string, side: "base" | "candidate") => Promise<LoadedProject | null>;
 }
 
 export interface RunResult {
@@ -69,8 +74,24 @@ function location(f: Fixture | undefined): SourceLocation | null {
   return f ? { kind: f.origin.kind, path: f.origin.path, line: f.origin.line } : null;
 }
 
+/**
+ * The scripts that build the baseline database, in order. Seed data is loaded
+ * against the bootstrap schema and then transformed by the migrations (the way
+ * production data is), unless the project has no bootstrap schema, in which case
+ * it loads after the baseline migrations.
+ */
+export function baselineScripts(p: LoadedProject, schemaSql: string, seedSql: string | null, plan: MigrationPlan): Array<{ path: string; sql: string }> {
+  const seed = p.paths.seed && seedSql !== null ? [{ path: p.paths.seed, sql: seedSql }] : [];
+  return [
+    ...(p.paths.schema ? [{ path: p.paths.schema, sql: schemaSql }] : []),
+    ...(p.seedAt === "bootstrap" ? seed : []),
+    ...plan.baseline.map((m) => ({ path: m.path, sql: m.sql })),
+    ...(p.seedAt === "after-baseline-migrations" ? seed : []),
+  ];
+}
+
 /** Run a schema/seed/migration script, statement by statement when possible. */
-async function runScript(session: PgSession, sql: string, timeoutMs: number): Promise<Outcome<null>> {
+export async function runScript(session: PgSession, sql: string, timeoutMs: number): Promise<Outcome<null>> {
   const parts = splitScript(sql);
   return parts ? session.runStatements(parts, timeoutMs) : session.runScript(sql, timeoutMs);
 }
@@ -110,7 +131,7 @@ export function assertionValue(r: QueryResult): { value: boolean | null; invalid
   return { value: v === "t" };
 }
 
-function errorText(e: DbError): string {
+export function errorText(e: DbError): string {
   return `${pgErrorName(e.code)}${e.code ? ` (${e.code})` : ""}: ${e.message}`;
 }
 
@@ -276,10 +297,11 @@ export async function runChecks(input: RunInput): Promise<RunResult> {
 
   // ---- Configuration
   try {
-    baseProject = await loadProject(input.base.source, input.projectDir);
-    if (!baseProject) problems.push({ kind: "config", message: `No crashpad.config.json in ${input.projectDir} at baseline ${input.base.ref}; the baseline contract is unknown` });
-    candProject = await loadProject(input.candidate.source, input.projectDir);
-    if (!candProject) problems.push({ kind: "config", message: `No crashpad.config.json in ${input.projectDir} in ${input.candidate.label}` });
+    const load = input.loadProject ?? ((src: Source, dir: string) => loadProject(src, dir));
+    baseProject = await load(input.base.source, input.projectDir, "base");
+    if (!baseProject) problems.push({ kind: "config", message: `No database configuration in ${input.projectDir} at baseline ${input.base.ref}; the baseline contract is unknown` });
+    candProject = await load(input.candidate.source, input.projectDir, "candidate");
+    if (!candProject) problems.push({ kind: "config", message: `No database configuration in ${input.projectDir} in ${input.candidate.label}` });
   } catch (err) {
     if (err instanceof ConfigError || err instanceof PathError) {
       problems.push({ kind: "config", message: err.message });
@@ -301,16 +323,17 @@ export async function runChecks(input: RunInput): Promise<RunResult> {
     candFixtures = await loadFixtures(candProject, input.candidate.source);
     plan = await planMigrations(baseProject, input.base.source, candProject, input.candidate.source);
     history.push(...plan.history);
-    schemaSql = await input.base.source.readFile(baseProject.paths.schema);
+    // Without a bootstrap schema file the migrations build everything from an empty database.
+    schemaSql = baseProject.paths.schema ? await input.base.source.readFile(baseProject.paths.schema) : "";
     if (schemaSql === null) {
       problems.push({ kind: "config", message: `Baseline schema file not found: ${baseProject.paths.schema}` });
       return finish();
     }
-    const candSchema = await input.candidate.source.readFile(candProject.paths.schema);
+    const candSchema = candProject.paths.schema ? await input.candidate.source.readFile(candProject.paths.schema) : "";
     if (candSchema !== schemaSql) {
       history.push({
         kind: "schema-edited",
-        file: candProject.paths.schema,
+        file: candProject.paths.schema ?? baseProject.paths.schema ?? "(schema)",
         message: "The bootstrap schema file differs from the baseline. Schema changes must be expressed as new migrations; Crashpad uses the baseline schema for both databases.",
         blocking: true,
       });
@@ -358,13 +381,7 @@ export async function runChecks(input: RunInput): Promise<RunResult> {
     }
     log(`building baseline database ${baseDb}`);
     baseSession = await server.connect(baseDb);
-    const scripts: Array<{ path: string; sql: string }> = [
-      // Seed data is loaded against the bootstrap schema and then transformed by the
-      // migrations, the same way production data is.
-      { path: baseProject.paths.schema, sql: schemaSql },
-      ...(baseProject.paths.seed && seedSql !== null ? [{ path: baseProject.paths.seed, sql: seedSql }] : []),
-      ...plan.baseline.map((m) => ({ path: m.path, sql: m.sql })),
-    ];
+    const scripts = baselineScripts(baseProject, schemaSql, seedSql, plan);
     for (const s of scripts) {
       const r = await runScript(baseSession, s.sql, limits.migrationTimeoutMs);
       if (!r.ok) {

@@ -117,17 +117,98 @@ export function parseJson(text: string, file: string): unknown {
   }
 }
 
+export const MigrationFormat = z.enum(["sql-dir", "prisma"]);
+export type MigrationFormat = z.infer<typeof MigrationFormat>;
+
+const DEFAULT_LIMITS = { maxRows: 1000, statementTimeoutMs: 5000, migrationTimeoutMs: 60_000, totalTimeoutMs: 300_000 };
+
+/**
+ * The `database` section of a version-2 config (or of a discovered configuration).
+ * Unlike version 1, the bootstrap schema and the check manifest are optional: a
+ * project whose migrations build the whole schema from an empty database needs
+ * neither, and migration execution and history checks still run without checks.
+ */
+export const DatabaseConfigSchema = z
+  .object({
+    schema: relPath.optional(),
+    seed: relPath.optional(),
+    /**
+     * When the seed loads: `bootstrap` (right after `schema`, so migrations transform it)
+     * or `after-baseline-migrations` (written against the current schema). Defaults to
+     * `bootstrap` with a schema file and `after-baseline-migrations` without one.
+     */
+    seedAt: z.enum(["bootstrap", "after-baseline-migrations"]).optional(),
+    migrations: relPath,
+    /** `sql-dir`: `*.sql` files in filename order. `prisma`: `<dir>/<name>/migration.sql` in directory order. */
+    migrationFormat: MigrationFormat.default("sql-dir"),
+    checks: relPath.optional(),
+    limits: LimitsSchema.default(DEFAULT_LIMITS),
+    report: z.object({ rowSamples: z.number().int().min(0).max(20).default(0) }).strict().default({ rowSamples: 0 }),
+  })
+  .strict();
+export type DatabaseConfig = z.infer<typeof DatabaseConfigSchema>;
+
 export interface LoadedProject {
   projectDir: string;
+  /** Where the configuration came from: a repo-relative file, or a label such as `(discovered)`. */
   configPath: string;
-  config: Config;
+  config: { limits: Limits; report: { rowSamples: number } };
   manifestPath: string;
   manifest: Manifest;
+  migrationFormat: MigrationFormat;
+  seedAt: "bootstrap" | "after-baseline-migrations";
   /** Repo-relative resolved paths. */
-  paths: { schema: string; seed?: string; migrations: string; checks: string };
+  paths: { schema?: string; seed?: string; migrations: string; checks?: string };
 }
 
-/** Load and validate config + manifest from a source. Returns null if no config file exists. */
+export function formatConfigError(err: z.ZodError): string {
+  return formatZod(err);
+}
+
+/** Build a database project from a database config section, reading the manifest from `source`. */
+export async function projectFromDatabaseConfig(source: Source, projectDir: string, db: DatabaseConfig, configPath: string): Promise<LoadedProject> {
+  const resolve = (p: string, what: string): string => {
+    try {
+      return projectPath(projectDir, p, what);
+    } catch (err) {
+      if (err instanceof PathError) throw new ConfigError(`${configPath}: ${err.message}`);
+      throw err;
+    }
+  };
+  const paths: LoadedProject["paths"] = {
+    ...(db.schema ? { schema: resolve(db.schema, "schema") } : {}),
+    ...(db.seed ? { seed: resolve(db.seed, "seed") } : {}),
+    migrations: resolve(db.migrations, "migrations"),
+    ...(db.checks ? { checks: resolve(db.checks, "checks") } : {}),
+  };
+  let manifest: Manifest = { version: 1, checks: [], retired: [] };
+  let manifestPath = configPath;
+  if (paths.checks) {
+    const manifestRaw = await source.readFile(paths.checks);
+    if (manifestRaw === null) throw new ConfigError(`${configPath}: check manifest not found: ${paths.checks}`);
+    const m = ManifestSchema.safeParse(parseJson(manifestRaw, paths.checks));
+    if (!m.success) throw new ConfigError(`${paths.checks}: ${formatZod(m.error)}`);
+    manifest = m.data;
+    manifestPath = paths.checks;
+    for (const c of manifest.checks) {
+      if (c.source) {
+        try {
+          projectPath(projectDir, c.source, `checks[${c.id}].source`);
+        } catch (err) {
+          throw new ConfigError(`${paths.checks}: ${(err as Error).message}`);
+        }
+      }
+    }
+  }
+  const seedAt = db.seedAt ?? (paths.schema ? "bootstrap" : "after-baseline-migrations");
+  return { projectDir, configPath, config: { limits: db.limits, report: db.report }, manifestPath, manifest, migrationFormat: db.migrationFormat, seedAt, paths };
+}
+
+/**
+ * Load the database project from `crashpad.config.json`. Version 1 files describe
+ * only the database; version 2 files carry it under `database`. Returns null if no
+ * config file exists, or if a version-2 file has no database section.
+ */
 export async function loadProject(source: Source, projectDir: string): Promise<LoadedProject | null> {
   let configPath: string;
   try {
@@ -137,37 +218,22 @@ export async function loadProject(source: Source, projectDir: string): Promise<L
   }
   const raw = await source.readFile(configPath);
   if (raw === null) return null;
-  const parsed = ConfigSchema.safeParse(parseJson(raw, configPath));
-  if (!parsed.success) throw new ConfigError(`${configPath}: ${formatZod(parsed.error)}`);
-  const config = parsed.data;
-  const resolve = (p: string, what: string): string => {
-    try {
-      return projectPath(projectDir, p, what);
-    } catch (err) {
-      if (err instanceof PathError) throw new ConfigError(`${configPath}: ${err.message}`);
-      throw err;
-    }
-  };
-  const paths = {
-    schema: resolve(config.schema, "schema"),
-    ...(config.seed ? { seed: resolve(config.seed, "seed") } : {}),
-    migrations: resolve(config.migrations, "migrations"),
-    checks: resolve(config.checks, "checks"),
-  };
-  const manifestRaw = await source.readFile(paths.checks);
-  if (manifestRaw === null) throw new ConfigError(`${configPath}: check manifest not found: ${paths.checks}`);
-  const m = ManifestSchema.safeParse(parseJson(manifestRaw, paths.checks));
-  if (!m.success) throw new ConfigError(`${paths.checks}: ${formatZod(m.error)}`);
-  for (const c of m.data.checks) {
-    if (c.source) {
-      try {
-        projectPath(projectDir, c.source, `checks[${c.id}].source`);
-      } catch (err) {
-        throw new ConfigError(`${paths.checks}: ${(err as Error).message}`);
-      }
-    }
+  const json = parseJson(raw, configPath) as { version?: unknown; database?: unknown };
+  if (json && typeof json === "object" && json.version === 2) {
+    if (json.database === undefined) return null;
+    const d = DatabaseConfigSchema.safeParse(json.database);
+    if (!d.success) throw new ConfigError(`${configPath}: database: ${formatZod(d.error)}`);
+    return projectFromDatabaseConfig(source, projectDir, d.data, configPath);
   }
-  return { projectDir, configPath, config, manifestPath: paths.checks, manifest: m.data, paths };
+  const parsed = ConfigSchema.safeParse(json);
+  if (!parsed.success) throw new ConfigError(`${configPath}: ${formatZod(parsed.error)}`);
+  const c = parsed.data;
+  return projectFromDatabaseConfig(
+    source,
+    projectDir,
+    { schema: c.schema, ...(c.seed ? { seed: c.seed } : {}), migrations: c.migrations, migrationFormat: "sql-dir", checks: c.checks, limits: c.limits, report: c.report },
+    configPath,
+  );
 }
 
 export function checkSourcePath(project: LoadedProject, check: CheckDef): string | null {

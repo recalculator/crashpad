@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import os from "node:os";
 import pg from "pg";
 import Cursor from "pg-cursor";
 
@@ -88,6 +89,16 @@ export class PgServer {
   databaseUrl(name: string): string {
     const u = new URL(this.url);
     u.pathname = `/${encodeURIComponent(name)}`;
+    return u.toString();
+  }
+
+  /**
+   * URL handed to an application under test. It names the user explicitly, because
+   * the application runs with a minimal environment (no USER/PGUSER passthrough).
+   */
+  appDatabaseUrl(name: string): string {
+    const u = new URL(this.databaseUrl(name));
+    if (!u.username) u.username = process.env.PGUSER ?? process.env.USER ?? os.userInfo().username;
     return u.toString();
   }
 

@@ -1,0 +1,11 @@
+{
+  "title": "Response field removed",
+  "description": "GET /me stops returning role, in both the code and the OpenAPI document.",
+  "mode": "check",
+  "expectedExit": 1,
+  "replace": [
+    { "file": "server.js", "find": "return send(res, 200, { id: user.id, email: user.email, name: user.name, role: user.role });", "with": "return send(res, 200, { id: user.id, email: user.email, name: user.name });" },
+    { "file": "openapi.yaml", "find": "      required: [id, email, name, role]\n      properties:\n        id: { type: string }\n        email: { type: string }\n        name: { type: string }\n        role: { type: string, enum: [user, admin] }", "with": "      required: [id, email, name]\n      properties:\n        id: { type: string }\n        email: { type: string }\n        name: { type: string }" }
+  ],
+  "expect": { "api:spec:GET /me:removed-response-field:responses/200/role": "regression", "api:me-matches-contract": "regression", "permissions:note-visible-to-owner-and-admin": "pass" }
+}

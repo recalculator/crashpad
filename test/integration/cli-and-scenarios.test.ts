@@ -22,7 +22,9 @@ describe("CLI exit semantics", () => {
     const dir = tempDir();
     expect(await main(["check", "--base", "main", "--report-dir", dir, "--database-url", DB_URL], r.dir)).toBe(0);
     const report = JSON.parse(fs.readFileSync(path.join(dir, "crashpad-report.json"), "utf8"));
-    expect(report.schemaVersion).toBe("crashpad.report/v1");
+    expect(report.schemaVersion).toBe("crashpad.suite/v1");
+    expect(report.database.schemaVersion).toBe("crashpad.report/v1");
+    expect(report.findings.find((f: { id: string }) => f.id === "database:q").classification).toBe("pass");
     expect(fs.readFileSync(path.join(dir, "crashpad-report.md"), "utf8")).toContain("All 1 check(s) passed");
   });
 

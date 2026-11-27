@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { resolveContext } from "./context.ts";
-import { runChecks } from "./runner.ts";
-import { renderMarkdown } from "./report/markdown.ts";
+import { databaseUrl, resolveContext, suiteInputFrom } from "./context.ts";
+import { renderSuiteMarkdown } from "./suite/markdown.ts";
+import { runSuite } from "./suite/runner.ts";
 import { VERSION } from "./version.ts";
 
 const HELP = `crashpad ${VERSION} — check whether a change breaks your app's PostgreSQL behavior
@@ -44,6 +44,7 @@ export const OPTIONS = {
   pr: { type: "string" },
   "database-url": { type: "string" },
   "keep-databases": { type: "boolean" },
+  "no-discovery": { type: "boolean" },
   verbose: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean" },
@@ -70,8 +71,16 @@ export async function writeReport(dir: string, report: object, markdown: string,
 async function cmdCheck(v: Values, cwd: string): Promise<number> {
   const ctx = await resolveContext({ cwd, base: need(v, "base"), head: v.head, project: v.project, databaseUrl: v["database-url"] });
   const log = v.verbose ? (m: string) => process.stderr.write(`crashpad: ${m}\n`) : undefined;
-  const { report } = await runChecks({ ...ctx.input, keepDatabases: !!v["keep-databases"], ...(log ? { log } : {}) });
-  const md = renderMarkdown(report);
+  const { discoverer, settingsFor } = await import("./discovery/index.ts");
+  const settings = v["no-discovery"] ? undefined : await settingsFor(ctx.repoRoot);
+  const { report } = await runSuite({
+    ...suiteInputFrom(ctx, databaseUrl(v["database-url"])),
+    discover: v["no-discovery"] ? false : discoverer(),
+    ...(settings ? { settings } : {}),
+    keepResources: !!v["keep-databases"],
+    ...(log ? { log } : {}),
+  });
+  const md = renderSuiteMarkdown(report);
   if (v["report-dir"]) await writeReport(path.resolve(cwd, v["report-dir"]), report, md);
   process.stdout.write(v.format === "json" ? JSON.stringify(report, null, 2) + "\n" : md);
   return report.exitCode;

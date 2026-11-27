@@ -30,7 +30,7 @@ export async function cmdValidate(v: Values, cwd: string): Promise<number> {
         process.stdout.write(`✓ ${f.def.id} [${f.def.category}] ${f.origin.kind === "file" ? f.origin.path : "inline"}\n`);
       }
     }
-    if (!(await source.readFile(project.paths.schema))) {
+    if (project.paths.schema && !(await source.readFile(project.paths.schema))) {
       bad++;
       process.stdout.write(`✗ schema file not found: ${project.paths.schema}\n`);
     }

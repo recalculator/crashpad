@@ -1,0 +1,11 @@
+{
+  "title": "New required request field",
+  "description": "POST /notes now requires a folder, in the contract and in the code. Existing clients break.",
+  "mode": "check",
+  "expectedExit": 1,
+  "replace": [
+    { "file": "server.js", "find": "if (!b || typeof b.title !== \"string\") return send(res, 400, { error: \"title is required\" });\n    const r = await pool.query(sql(\"create_note\")", "with": "if (!b || typeof b.title !== \"string\" || typeof b.folder !== \"string\") return send(res, 400, { error: \"title and folder are required\" });\n    const r = await pool.query(sql(\"create_note\")" },
+    { "file": "openapi.yaml", "find": "              required: [title]\n              properties:\n                title: { type: string }\n                body: { type: string }", "with": "              required: [title, folder]\n              properties:\n                title: { type: string }\n                body: { type: string }\n                folder: { type: string }" }
+  ],
+  "expect": { "api:spec:POST /notes:new-required-request-field:/folder": "regression", "workflows:signup-login-create-update": "regression", "permissions:note-visible-to-owner-and-admin": "regression", "api:me-matches-contract": "pass" }
+}
