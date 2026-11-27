@@ -15,6 +15,7 @@ export async function writeFixArtifacts(dir: string, r: FixResult): Promise<void
   await fs.writeFile(path.join(dir, "fix-plan.json"), JSON.stringify(r.plan, null, 2) + "\n");
   await fs.writeFile(path.join(dir, "fix.patch"), r.patch);
   await fs.writeFile(path.join(dir, "pr-description.md"), `# ${r.prTitle}\n\n${r.prBody}`);
+  await fs.writeFile(path.join(dir, "pr-body.md"), r.prBody);
 }
 
 export function fixSummary(r: FixResult, outDir: string): string {
