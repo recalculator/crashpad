@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "schema": "db/schema.sql",
+  "seed": "db/seed.sql",
+  "migrations": "db/migrations",
+  "checks": "crashpad.checks.json",
+  "limits": {
+    "maxRows": 1000,
+    "statementTimeoutMs": 5000,
+    "migrationTimeoutMs": 60000,
+    "totalTimeoutMs": 300000
+  },
+  "report": { "rowSamples": 3 }
+}

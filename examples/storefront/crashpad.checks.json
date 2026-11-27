@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "customer-profile",
+      "category": "read",
+      "description": "Account page profile for a customer with orders",
+      "source": "sql/customer_profile.sql",
+      "params": [1]
+    },
+    {
+      "id": "customer-profile-no-orders",
+      "category": "read",
+      "description": "Profile for a customer without orders (exercises the LEFT JOIN)",
+      "source": "sql/customer_profile.sql",
+      "params": [6]
+    },
+    {
+      "id": "order-summary",
+      "category": "read",
+      "description": "Checkout summary lines for an order",
+      "source": "sql/order_summary.sql",
+      "params": [1],
+      "ordered": true
+    },
+    {
+      "id": "customer-orders",
+      "category": "read",
+      "description": "Order history, in order",
+      "source": "sql/customer_orders.sql",
+      "params": [2],
+      "ordered": true
+    },
+    {
+      "id": "signup",
+      "category": "write",
+      "description": "Customer signup",
+      "source": "sql/create_customer.sql",
+      "params": ["new.customer@example.test", "Nova Customer"],
+      "expectRows": 1,
+      "ignoreColumns": ["id", "created_at"]
+    },
+    {
+      "id": "update-customer-name",
+      "category": "write",
+      "description": "Profile edit",
+      "source": "sql/update_customer_name.sql",
+      "params": ["Ada King", 1],
+      "expectRows": 1
+    },
+    {
+      "id": "create-order",
+      "category": "write",
+      "description": "Order creation at checkout",
+      "source": "sql/create_order.sql",
+      "params": [3, "42.50"],
+      "expectRows": 1,
+      "ignoreColumns": ["id"]
+    },
+    {
+      "id": "mark-order-paid",
+      "category": "write",
+      "description": "Payment webhook marks a pending order paid",
+      "source": "sql/mark_order_paid.sql",
+      "params": [3],
+      "expectRows": 1
+    },
+    {
+      "id": "no-negative-order-totals",
+      "category": "assertion",
+      "description": "Order totals are never negative",
+      "sql": "SELECT NOT EXISTS (SELECT 1 FROM orders WHERE total < 0)"
+    },
+    {
+      "id": "no-orphaned-order-items",
+      "category": "assertion",
+      "description": "Every order item belongs to an existing order",
+      "sql": "SELECT NOT EXISTS (SELECT 1 FROM order_items i LEFT JOIN orders o ON o.id = i.order_id WHERE o.id IS NULL)"
+    },
+    {
+      "id": "order-totals-match-items",
+      "category": "assertion",
+      "description": "Each order total equals the sum of its line items",
+      "sql": "SELECT NOT EXISTS (SELECT 1 FROM orders o JOIN (SELECT order_id, sum(quantity * unit_price) AS s FROM order_items GROUP BY order_id) i ON i.order_id = o.id WHERE i.s <> o.total)"
+    },
+    {
+      "id": "customer-count",
+      "category": "assertion",
+      "description": "Migrations neither add nor drop customers",
+      "sql": "SELECT count(*) = 6 FROM customers"
+    },
+    {
+      "id": "recognized-revenue-preserved",
+      "category": "assertion",
+      "description": "Revenue from paid and shipped orders is unchanged (519.56)",
+      "sql": "SELECT coalesce(sum(total), 0) = 519.56 FROM orders WHERE status IN ('paid', 'shipped')"
+    }
+  ],
+  "retired": []
+}
