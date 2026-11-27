@@ -1,0 +1,16 @@
+{
+  "title": "Healthy change",
+  "story": "Adds a nullable loyalty_tier column, an index, and a new integrity check. Nothing existing should break.",
+  "mode": "check",
+  "expectedExit": 0,
+  "addChecks": [
+    {
+      "id": "loyalty-tier-valid",
+      "category": "assertion",
+      "description": "Loyalty tiers are bronze, silver, gold, or unset",
+      "sql": "SELECT NOT EXISTS (SELECT 1 FROM customers WHERE loyalty_tier IS NOT NULL AND loyalty_tier NOT IN ('bronze', 'silver', 'gold'))"
+    }
+  ],
+  "expect": { "loyalty-tier-valid": "pass", "customer-profile": "pass", "signup": "pass" },
+  "expectNew": ["loyalty-tier-valid"]
+}

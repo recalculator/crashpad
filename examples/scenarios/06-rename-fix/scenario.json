@@ -1,0 +1,8 @@
+{
+  "title": "Supported rename fix",
+  "story": "Same rename as scenario 2. Crashpad proposes AST-based edits to the real SQL files, verifies them against the ORIGINAL baseline queries and results, and the storefront's own integration tests pass again in an isolated worktree.",
+  "mode": "fix",
+  "expectedExit": 0,
+  "expectOutcome": "verified",
+  "expectEdited": ["sql/create_customer.sql", "sql/customer_profile.sql", "sql/order_summary.sql", "sql/update_customer_name.sql"]
+}

@@ -1,0 +1,15 @@
+{
+  "title": "Renamed column",
+  "story": "A migration renames customers.name to full_name, but the application's SQL still says name. Profile reads, the checkout summary, signup, and profile edits break.",
+  "mode": "check",
+  "expectedExit": 1,
+  "expect": {
+    "customer-profile": "regression",
+    "order-summary": "regression",
+    "signup": "regression",
+    "update-customer-name": "regression",
+    "create-order": "pass",
+    "customer-count": "pass"
+  },
+  "expectErrorCode": { "customer-profile": "42703", "signup": "42703" }
+}

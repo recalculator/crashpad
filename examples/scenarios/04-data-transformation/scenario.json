@@ -1,0 +1,14 @@
+{
+  "title": "Data transformation",
+  "story": "A data migration flips refunded order totals negative. It runs without error and every query still works, but two integrity assertions fail.",
+  "mode": "check",
+  "expectedExit": 1,
+  "expect": {
+    "customer-profile": "pass",
+    "customer-orders": "pass",
+    "signup": "pass",
+    "no-negative-order-totals": "failed-assertion",
+    "order-totals-match-items": "failed-assertion",
+    "recognized-revenue-preserved": "pass"
+  }
+}
