@@ -339,6 +339,8 @@ jobs:
 
 The fix PR **targets the branch that contains the breaking change**, because the patch only makes sense on top of that change's migration. Merge the fix PR into that branch, and the original PR's Crashpad check goes green.
 
+The fix PR's own Crashpad check compares against that broken branch, so it reports the fixed checks as **existing baseline failures (exit 2)**, not as a pass. Crashpad will not vouch for a change whose baseline is broken. To check the combined result, run `crashpad check --base main --head origin/<fix-branch>`.
+
 **From your machine** (uses `GITHUB_TOKEN`/`GH_TOKEN`, or your `gh auth` login):
 
 ```sh
