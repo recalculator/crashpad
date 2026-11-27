@@ -6,9 +6,9 @@ This is what has been validated, how, and what has not. Dates are 2026-11-26 and
 
 | Where | Node | PostgreSQL | Result |
 |---|---|---|---|
-| Local, macOS (arm64) | 26.3.1 | 16.14 (Homebrew) | typecheck ✅, **TESTCOUNT** tests ✅ |
-| Fresh `git clone` of `main` + `npm ci`, macOS | 26.3.1 | 16.14 | CLEANCLONE |
-| GitHub Actions `ubuntu-latest` (CI workflow) | 22.x and 24.x | `postgres:16` service container | CIRESULT |
+| Local, macOS (arm64) | 26.3.1 | 16.14 (Homebrew) | typecheck ✅, **196/196** tests ✅ |
+| Fresh `git clone` of `main` (e863c08) + `npm ci`, macOS | 26.3.1 | 16.14 | typecheck ✅, 196/196 tests ✅ |
+| GitHub Actions `ubuntu-latest` (CI workflow) | 22.x and 24.x | `postgres:16` service container | typecheck and all tests ✅ on `main` at e863c08 ([run 46068485534](https://github.com/recalculator/crashpad/actions/runs/46068485534)), including the packaged-CLI and GitHub App tests |
 
 Not tested: PostgreSQL 13–15 and 17+, and Windows. Crashpad needs PostgreSQL 13+ for `DROP DATABASE … WITH (FORCE)`. npm 11 prints harmless `allow-scripts` warnings (for `fsevents`, and for Crashpad's own build script when it is installed from Git or an archive).
 
