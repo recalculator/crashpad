@@ -12,6 +12,64 @@ This is what has been validated, how, and what has not. Dates are 2026-11-26 and
 
 Not tested: PostgreSQL 13–15 and 17+, and Windows. Crashpad needs PostgreSQL 13+ for `DROP DATABASE … WITH (FORCE)`. npm 11 prints harmless `allow-scripts` warnings (for `fsevents`, and for Crashpad's own build script when it is installed from Git or an archive).
 
+## Real-project trial (2026-11-27)
+
+**Target:** Willo (`github.com/recalculator/Willo-Story-Generation`), the owner's own project.
+
+- **Why this one:** a TypeScript Node app (Hono HTTP API with a Vite UI) that runs locally without API keys in demo mode, with `typecheck` and `test` scripts and a clean working tree. It stores data in SQLite, not PostgreSQL.
+- **Second, discovery-only target:** `autofounder` (Next.js + Drizzle + PostgreSQL, local-only repository), chosen to see how discovery handles a Postgres project.
+- **Not used:** TasteSync, because it is not the owner's repository, and the Swift/Jac projects, which are not Node.
+
+**How it was run:**
+
+- Crashpad came from an `npm pack` archive installed into an empty directory outside the source checkout. Every command used that install's `node_modules/.bin/crashpad`, with an isolated `CRASHPAD_HOME`.
+- No Crashpad file was added to either repository. Both working trees were unchanged afterwards: the original Willo checkout stayed at `d29c840` on `main` only.
+- Regressions and repairs happened only in disposable clones. Nothing was pushed, and no PR was opened in the target project.
+
+### Round 1: package built from `ea2556c`
+
+Commands: `crashpad setup --repo-dir ~/Projects/Willo --repo-dir ~/Projects/autofounder`, then `crashpad check --base HEAD` in a disposable clone.
+
+| | Result |
+|---|---|
+| Discovered correctly | npm and its lockfile; the `build` and `start` scripts; the `typecheck` and `test` scripts (used for repair); `.env.example`; no database (correct: SQLite); no OpenAPI. For autofounder: the `postgres` client dependency, the `start` and `build` scripts, and `.env.example`. |
+| Not discoverable (correctly reported) | Permission and workflow scenarios; an OpenAPI contract; a health endpoint. |
+| **Defect: misleading status** | Willo's four blank, **optional** keys (`ANTHROPIC_API_KEY` and so on: "leave blank to run in demo mode") were reported as **missing required variables**. That made every run exit 2, and no setting could work around it. |
+| **Defect: undiscovered port** | Willo reads `WILLO_PORT` (documented only as a commented default) and binds 8787. Crashpad set `PORT`, so startup failed on both versions: here with `EADDRINUSE`, because the owner's own Willo dev server was using 8787. Discovery did not flag the assumption. Manual step: `crashpad settings --set app.portEnv=WILLO_PORT`, after which startup passed. |
+| **Defect: unexplained "not detected"** | autofounder's database area said "not detected" next to "found: PostgreSQL client". The project applies its schema with `drizzle-kit push` and has no migration history, and nothing said so. |
+| Minor | "no health endpoint in the OpenAPI document" when there was no OpenAPI document; permission and workflow gaps listed twice; discovered test commands not shown in `setup`. |
+| Regression caught | Incomplete rename (`renderRubric` → `formatRubric` in `src/core/rubric.ts` only): `config:startup` regression, exit 1, with the exact `SyntaxError` from the app's output as evidence. |
+| **Live repair: UNRESOLVED (a Crashpad bug)** | Claude Code 2.1.332 (Pro subscription) produced the **correct** fix in attempt 1 (updated `src/core/prompts.ts`), and Willo's `typecheck` and `test` passed. Crashpad rejected it anyway, for three reasons: (a) the misreported env keys kept verification at exit 2; (b) the feedback prompt named no failing checks, so attempt 2 changed nothing; (c) Willo's tests were classed as "already failing before the change", because they were compared with the **failing** commit instead of the baseline. Cost: about $0.27 estimated across 2 attempts (11 + 4 turns). |
+
+### Fixes (`9434733` and the following commit)
+
+- `.env.example` declares variables and no longer marks them required. Startup decides, and a newly declared variable without a test value is listed in coverage.
+- The port variable is discovered (`PORT`, or a single `*_PORT`, including commented defaults). Otherwise discovery says `PORT` is assumed.
+- Postgres projects without migration history now get an exact explanation.
+- Repair verification:
+  - excuses only app-test failures present at the **baseline**;
+  - accepts undecided checks only if they were already undecided before the change;
+  - names newly undecided checks in the feedback.
+- An unknown `--base` ref prints a one-line message with an `origin/<ref>` suggestion instead of a stack trace. This turned up during the round-2 cross-check.
+- Regression coverage: the `optional-env-app` fixture (shaped like Willo), discovery unit tests (including autofounder's Drizzle shape), and repair tests for both verification rules.
+
+### Round 2: fresh package, install, `CRASHPAD_HOME`, and clone, with no manual settings
+
+| | Result |
+|---|---|
+| `setup` | Willo: port variable `WILLO_PORT` found; the 4 env keys reported as "declared; startup decides"; setup shows the `typecheck` and `test` commands. autofounder: "drizzle.config.ts is present but no generated Drizzle migrations were found … generate migrations (`drizzle-kit generate`) or set database.migrations". |
+| Unchanged code (`check --base HEAD`) | **exit 0**: "All 2 check(s) passed (partial coverage)". The 2 checks are the environment contract and startup/readiness. |
+| Same regression | **exit 1**: `config:startup` regression with the `SyntaxError` evidence |
+| **Live repair (real Claude Code CLI)** | **VERIFIED after 1 attempt** (11 turns, est. $0.12, 17.5 s of agent time). The patch changed `src/core/prompts.ts` only, completing the rename (import and call). Verification required `typecheck` and `test` to pass, because both pass at the baseline, and both did. |
+| Independent cross-check | Patch applied with `git apply` in another clone: `tsc` ok, `vitest` 40/40 passed, installed `crashpad check --base origin/main` exit 0 |
+
+**What the trial does not show:**
+
+- The **database area was not exercised** on a real project. Willo has no PostgreSQL, and autofounder has no migration history.
+- **API, permission, and workflow checks did not run**, because neither project has an OpenAPI document or scenarios.
+
+On a project like Willo, today's real coverage is the environment contract plus startup and readiness, and the report says so.
+
 ## Packaged CLI (automated: `test/integration/package.test.ts`)
 
 The test does the following:
@@ -190,7 +248,7 @@ The action's PR-comment step has not yet run on a pull request. PR #1's comment 
 
 ## Not validated
 
-- **Crashpad has not been used on a real application** other than the test fixtures.
+- **Real-project use is limited to one trial** (Willo; see above). On a real project, only the configuration/startup area actually ran. The database, API, permission, and workflow areas have run only on fixtures.
 - **The GitHub App flow has not run against github.com** (see above).
 - A real fork PR with a read-only token: covered only with fakes.
 - The composite `action.yml` from another repository, and its PR-comment step on a live pull request.

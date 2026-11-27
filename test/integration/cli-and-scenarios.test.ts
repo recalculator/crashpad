@@ -39,7 +39,11 @@ describe("CLI exit semantics", () => {
     const r = mk();
     expect(await main(["check"], r.dir)).toBe(2);
     expect(await main(["check", "--base", "main", "--bogus"], r.dir)).toBe(2);
+    out = "";
     expect(await main(["check", "--base", "no-such-ref", "--database-url", DB_URL], r.dir)).toBe(2);
+    // A clear one-line message, not a stack trace (found in the real-project trial).
+    expect(out).toContain('unknown ref "no-such-ref": it is not a commit in this repository');
+    expect(out).not.toMatch(/\n\s+at /);
     r.write({ "checks.json": "{ not json" });
     expect(await main(["check", "--base", "main", "--database-url", DB_URL], r.dir)).toBe(2);
     expect(await main(["validate"], r.dir)).toBe(2);

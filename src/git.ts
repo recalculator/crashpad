@@ -45,9 +45,19 @@ export async function repoRoot(cwd: string): Promise<string> {
   return gitOut(cwd, ["rev-parse", "--show-toplevel"]);
 }
 
+/** A ref that does not name a commit; the message is meant for the user, not a stack trace. */
+export class RefError extends GitError {
+  override name = "RefError";
+}
+
 export async function resolveCommit(cwd: string, ref: string): Promise<string> {
-  if (ref.startsWith("-")) throw new GitError(`refusing ref that looks like an option: ${ref}`);
-  return gitOut(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
+  if (ref.startsWith("-")) throw new RefError(`refusing ref that looks like an option: ${ref}`);
+  try {
+    return await gitOut(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
+  } catch {
+    const remotes = (await gitOut(cwd, ["for-each-ref", "--format=%(refname:short)", `refs/remotes/*/${ref}`]).catch(() => "")).split("\n").filter(Boolean);
+    throw new RefError(`unknown ref "${ref}": it is not a commit in this repository${remotes.length ? `. Did you mean ${remotes.map((r) => `"${r}"`).join(" or ")}?` : ""}`);
+  }
 }
 
 /** Parse `owner/name` from a GitHub remote URL (https or ssh). */

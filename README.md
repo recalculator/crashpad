@@ -316,6 +316,7 @@ The composite action ([`action.yml`](action.yml)) runs `crashpad check` in a wor
 |---|---|---|
 | All five check areas | Real PostgreSQL 16, real Git, real app processes (the `notes-api` fixture), with failures reproduced in each area | — |
 | Discovery and onboarding | Real repositories, no Crashpad config file; packaged CLI's `discover` and `settings` | — |
+| **Real-project trial** | **Willo** (the owner's Hono/TypeScript app), using the packaged CLI with no Crashpad file in the repository. Discovery, startup, and env checks ran; a real regression was caught; a **live Claude repair was verified** (after fixing four onboarding defects the trial found). Only the configuration/startup area applied there. | — |
 | Packaging | `npm pack` archive installed in a clean directory outside the checkout, then a real discovered `check` | — |
 | Deterministic repair | Real checks and verification | — |
 | **Claude Code repair** | **Live on this machine:** Claude Code 2.1.332 with a Pro subscription sign-in repaired a permission regression in 1 attempt (7 turns), verified by Crashpad with all 22 checks and the app tests passing | Rejection of incorrect patches, "success without a fix", guardrail violations, expired sign-in, usage exhaustion, limits, and cancellation use a **mock Claude CLI** |

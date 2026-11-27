@@ -5,6 +5,7 @@ import { databaseUrl, resolveContext, suiteInputFrom } from "./context.ts";
 import { renderSuiteMarkdown } from "./suite/markdown.ts";
 import { runSuite } from "./suite/runner.ts";
 import { VERSION } from "./version.ts";
+import { RefError } from "./git.ts";
 
 const HELP = `crashpad ${VERSION} — check whether a backend change breaks database, API, configuration,
 permission, or workflow behavior, and repair it with independent verification
@@ -173,6 +174,10 @@ export async function main(argv: string[], cwd = process.cwd()): Promise<number>
   } catch (err) {
     if (err instanceof UsageError) {
       process.stderr.write(`crashpad: ${err.message}\n\n${HELP}`);
+      return 2;
+    }
+    if (err instanceof RefError) {
+      process.stderr.write(`crashpad: ${err.message}\n`);
       return 2;
     }
     process.stderr.write(`crashpad: ${(err as Error).stack ?? String(err)}\n`);
