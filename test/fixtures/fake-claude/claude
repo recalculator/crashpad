@@ -1,0 +1,82 @@
+#!/usr/bin/env node
+// MOCK of the Claude Code CLI process contract, for Crashpad's automated tests.
+// It is not Claude: it applies scripted edits so the repair loop and adapter can be
+// tested deterministically. Behavior is selected with FAKE_CLAUDE_MODE.
+import fs from "node:fs";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+const mode = process.env.FAKE_CLAUDE_MODE ?? "fix-permission";
+const logFile = process.env.FAKE_CLAUDE_LOG;
+if (logFile) fs.appendFileSync(logFile, JSON.stringify({ args, cwd: process.cwd(), apiKeyPresent: "ANTHROPIC_API_KEY" in process.env, authTokenPresent: "ANTHROPIC_AUTH_TOKEN" in process.env }) + "\n");
+
+if (args[0] === "--version") {
+  console.log("9.9.9 (Claude Code)");
+  process.exit(0);
+}
+if (args[0] === "auth" && args[1] === "status") {
+  const method = process.env.FAKE_CLAUDE_AUTH ?? "claude.ai";
+  if (method === "none") {
+    console.log(JSON.stringify({ loggedIn: false, authMethod: "none" }));
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ loggedIn: true, authMethod: method, apiProvider: "firstParty", email: "someone@example.test", orgName: "Org", loginExpiresAt: process.env.FAKE_CLAUDE_EXPIRES ?? "2999-01-01T00:00:00.000Z", subscriptionType: "pro" }));
+  process.exit(0);
+}
+
+const resumed = args.includes("--resume");
+const session = args[args.indexOf(resumed ? "--resume" : "--session-id") + 1];
+const result = (text, extra = {}) => console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, session_id: session, num_turns: 3, total_cost_usd: 0.01, ...extra }));
+const edit = (file, find, replace) => {
+  const p = path.join(process.cwd(), file);
+  const t = fs.readFileSync(p, "utf8");
+  if (!t.includes(find)) throw new Error(`fake claude: ${file} does not contain the expected text`);
+  fs.writeFileSync(p, t.split(find).join(replace));
+};
+const OWNER_CHECK_REMOVED = 'if (!note) return send(res, 404, { error: "not found" });';
+const OWNER_CHECK = 'if (!note || (String(note.owner_id) !== user.id && user.role !== "admin")) return send(res, 404, { error: "not found" });';
+const WRONG_CHECK = 'if (!note || (String(note.owner_id) !== user.id)) return send(res, 404, { error: "not found" });';
+
+switch (mode) {
+  case "fix-permission":
+    edit("server.js", OWNER_CHECK_REMOVED, OWNER_CHECK);
+    result("Restored the ownership check on GET /notes/{id}.");
+    break;
+  case "wrong-then-right":
+    if (!resumed) {
+      edit("server.js", OWNER_CHECK_REMOVED, WRONG_CHECK);
+      result("Fixed it.");
+    } else {
+      edit("server.js", WRONG_CHECK, OWNER_CHECK);
+      result("Admins can see notes again too.");
+    }
+    break;
+  case "cheat": {
+    const m = path.join(process.cwd(), "crashpad.http.json");
+    fs.writeFileSync(m, fs.readFileSync(m, "utf8").replace('"bob": [403, 404]', '"bob": [200, 403, 404]'));
+    fs.writeFileSync(path.join(process.cwd(), "test", "api.test.js"), "// tests removed\n");
+    result("All checks pass now.");
+    break;
+  }
+  case "claims-success":
+    result("I fixed everything; all tests pass.");
+    break;
+  case "expired":
+    console.log(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "Failed to authenticate. API Error: 401 OAuth token has expired. Please run /login", session_id: session }));
+    process.exit(1);
+    break;
+  case "usage":
+    console.log(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "Claude AI usage limit reached|1767225600", session_id: session }));
+    process.exit(1);
+    break;
+  case "max-turns":
+    console.log(JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true, session_id: session, num_turns: 2 }));
+    process.exit(1);
+    break;
+  case "hang":
+    setInterval(() => {}, 1000);
+    break;
+  default:
+    console.error(`unknown FAKE_CLAUDE_MODE ${mode}`);
+    process.exit(3);
+}

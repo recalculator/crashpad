@@ -1,7 +1,7 @@
 import { ConfigError, projectFromDatabaseConfig, type LoadedProject } from "../config.ts";
 import { PgServer } from "../db/postgres.ts";
 import { pgErrorName } from "../db/errors.ts";
-import { PathError } from "../paths.ts";
+import { PathError, projectPath } from "../paths.ts";
 import type { CheckFinding, Problem, Report } from "../report/types.ts";
 import { baselineScripts, runChecks, type RunResult } from "../runner.ts";
 import type { Source } from "../source.ts";
@@ -355,10 +355,11 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
   let contract: LoadedSpec | null = null;
   if (baseSpecPath || candSpecPath) {
     applicable.add("api");
-    const bl = baseSpecPath ? await loadSpec(input.base.source, baseSpecPath) : null;
-    const cl = candSpecPath ? await loadSpec(input.candidate.source, candSpecPath) : null;
+    const at = (p: string) => projectPath(input.projectDir, p, "api.openapi");
+    const bl = baseSpecPath ? await loadSpec(input.base.source, at(baseSpecPath)) : null;
+    const cl = candSpecPath ? await loadSpec(input.candidate.source, at(candSpecPath)) : null;
     if (bl?.ok) contract = bl.spec;
-    const r = specFindings(bl, cl, candSpecPath!);
+    const r = specFindings(bl, cl, at(candSpecPath!));
     findings.push(...r.findings);
     ran.api.push(...r.ran);
     missing.api.push(...r.missing);
@@ -383,8 +384,9 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
         }
         return { scripts };
       };
-      const envOf = async (src: Source, c: SuiteConfig): Promise<EnvSchemaLoad | null> => (c.app?.envSchema ? loadEnvSchema(src, c.app.envSchema) : null);
-      const httpOf = async (src: Source, c: SuiteConfig): Promise<HttpManifest | null> => (c.http ? loadHttpManifest(src, c.http.checks) : null);
+      const at = (p: string, what: string) => projectPath(input.projectDir, p, what);
+      const envOf = async (src: Source, c: SuiteConfig): Promise<EnvSchemaLoad | null> => (c.app?.envSchema ? loadEnvSchema(src, { ...c.app.envSchema, path: at(c.app.envSchema.path, "app.envSchema.path") }) : null);
+      const httpOf = async (src: Source, c: SuiteConfig): Promise<HttpManifest | null> => (c.http ? loadHttpManifest(src, at(c.http.checks, "http.checks")) : null);
       try {
         const bScripts = await dbScripts("base");
         const cScripts = await dbScripts("candidate");

@@ -1,7 +1,7 @@
 {
   "name": "crashpad",
-  "version": "0.1.0",
-  "description": "Checks whether backend changes break an application's PostgreSQL behavior, proposes verified fixes, and opens draft fix PRs.",
+  "version": "0.2.0",
+  "description": "Checks whether a backend change breaks database, API contract, configuration/startup, permission, or workflow behavior; repairs with independent verification and draft fix PRs.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -12,14 +12,18 @@
   },
   "files": [
     "bin",
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs/third-party.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "crashpad": "node bin/crashpad.js"
+    "crashpad": "node bin/crashpad.js",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^13.1.0",

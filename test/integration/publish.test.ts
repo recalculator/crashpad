@@ -1,8 +1,8 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { cmdComment, commentBody, upsertComment } from "../../src/commands/comment.ts";
-import type { GitHubApi, IssueComment } from "../../src/github/client.ts";
-import { GitHubHttpError } from "../../src/github/client.ts";
+import { FakeGitHub } from "../helpers/fake-github.ts";
+import { GitHubHttpError, type GitHubApi } from "../../src/github/client.ts";
 import { fixBranchName, publishFixPr } from "../../src/github/publish.ts";
 import { COMMENT_MARKER } from "../../src/report/markdown.ts";
 import { check, g, projectFiles, server, tempDir, TestRepo, type CheckSpec } from "../helpers/project.ts";
@@ -11,30 +11,6 @@ import { check, g, projectFiles, server, tempDir, TestRepo, type CheckSpec } fro
  * GitHub's HTTP API is faked here. Git is real: a local bare repository stands in
  * for the GitHub remote via `url.<path>.insteadOf`, so fetch/push run for real.
  */
-class FakeGitHub implements GitHubApi {
-  prs: Array<{ owner: string; repo: string; title: string; body: string; head: string; base: string; draft: boolean }> = [];
-  comments: IssueComment[] = [];
-  failCreatePr = false;
-  async createPullRequest(owner: string, repo: string, p: { title: string; body: string; head: string; base: string; draft: boolean }) {
-    if (this.failCreatePr) throw new GitHubHttpError(422, "Validation Failed: simulated");
-    this.prs.push({ owner, repo, ...p });
-    return { number: this.prs.length, html_url: `https://github.com/${owner}/${repo}/pull/${this.prs.length}` };
-  }
-  async listIssueComments() {
-    return this.comments;
-  }
-  async createIssueComment(_o: string, _r: string, _i: number, body: string) {
-    const c = { id: this.comments.length + 1, body, html_url: `https://example.test/c/${this.comments.length + 1}` };
-    this.comments.push(c);
-    return c;
-  }
-  async updateIssueComment(_o: string, _r: string, id: number, body: string) {
-    const c = this.comments.find((x) => x.id === id)!;
-    c.body = body;
-    return c;
-  }
-}
-
 const SCHEMA = "CREATE TABLE customers (id int PRIMARY KEY, name text NOT NULL);";
 const CHECKS: CheckSpec[] = [
   { id: "names", category: "read", source: "sql/names.sql" },

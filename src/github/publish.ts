@@ -117,63 +117,126 @@ export async function publishFixPr(o: PublishOptions): Promise<PublishResult> {
     if (key(o.plan) !== key(fix.plan)) return refused("stale plan: re-verification produced a different patch", 2, fix);
   }
 
-  const branch = fixBranchName(o.branch, targetCommit);
+  if (!o.api && !o.dryRun) return refused("no GitHub token available to open the pull request", 2, fix);
+  const r = await publishFiles({
+    repoRoot: root,
+    remote,
+    owner: parsed.owner,
+    repo: parsed.repo,
+    targetBranch: o.branch,
+    targetCommit,
+    files: fix.proposal!.edits.map((e) => ({ path: e.path, before: e.before, after: e.after })),
+    title: fix.prTitle,
+    body: fix.prBody,
+    commitMessage: [fix.prTitle, `Verified by Crashpad against ${o.base} (${baseCommit.slice(0, 12)}).\nInputs digest: ${fix.plan.inputsDigest}`],
+    api: o.api,
+    ...(o.dryRun ? { dryRun: true } : {}),
+    log,
+  });
+  return { ...r, fix };
+}
+
+export interface FileChange {
+  path: string;
+  /** Content at the target commit; null for a new file. */
+  before: string | null;
+  /** New content; null deletes the file. */
+  after: string | null;
+}
+
+export interface PublishFilesOptions {
+  repoRoot: string;
+  remote: string;
+  owner: string;
+  repo: string;
+  /** The fix PR targets this branch. */
+  targetBranch: string;
+  /** The exact commit the verified change applies to; the fix commit's parent. */
+  targetCommit: string;
+  files: FileChange[];
+  title: string;
+  body: string;
+  commitMessage: string[];
+  api: GitHubApi | null;
+  dryRun?: boolean;
+  /** Branch name to create; defaults to crashpad/fix-<target>-<sha8>. */
+  branch?: string;
+  log?: (msg: string) => void;
+}
+
+/**
+ * Commit exactly `files` on a new branch whose parent is `targetCommit`, push it
+ * without force, and open a draft PR into `targetBranch`. The user's checkout is
+ * never touched: the commit is made in a temporary worktree. Refuses to reuse or
+ * overwrite an existing branch.
+ */
+export async function publishFiles(o: PublishFilesOptions): Promise<PublishResult> {
+  const log = o.log ?? (() => {});
+  const root = o.repoRoot;
+  const remote = o.remote;
+  const branch = o.branch ?? fixBranchName(o.targetBranch, o.targetCommit);
+  try {
+    await git(root, ["check-ref-format", "--branch", branch]);
+  } catch {
+    return refused(`invalid branch name: ${branch}`);
+  }
   const remoteHas = (await git(root, ["ls-remote", "--heads", remote, `refs/heads/${branch}`])).stdout.trim();
-  if (remoteHas) return refused(`branch ${branch} already exists on ${remote}; refusing to overwrite it (no force pushes)`, 2, fix);
+  if (remoteHas) return refused(`branch ${branch} already exists on ${remote}; refusing to overwrite it (no force pushes)`, 2);
   const localHas = await git(root, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
-  if (localHas) return refused(`local branch ${branch} already exists; delete it or publish from a clean state`, 2, fix);
+  if (localHas) return refused(`local branch ${branch} already exists; delete it or publish from a clean state`, 2);
+  if (!o.files.length) return refused("nothing to publish: the change has no files", 2);
 
   if (o.dryRun) {
-    return { status: "dry-run", exitCode: 0, message: `verified; would push ${branch} and open a draft PR into ${o.branch}`, branch, fix };
+    return { status: "dry-run", exitCode: 0, message: `verified; would push ${branch} and open a draft PR into ${o.targetBranch}`, branch };
   }
-  if (!o.api) return refused("no GitHub token available to open the pull request", 2, fix);
+  if (!o.api) return refused("no GitHub token available to open the pull request", 2);
 
-  // 5. Commit only the intended files in an isolated worktree.
-  const edits = fix.proposal!.edits;
-  const intended = edits.map((e) => e.path).sort();
+  const intended = o.files.map((f) => f.path).sort();
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crashpad-fixpr-"));
   let commit: string;
   let pushed = false;
   try {
-    await git(root, ["worktree", "add", "--detach", dir, targetCommit]);
+    await git(root, ["worktree", "add", "--detach", dir, o.targetCommit]);
     await git(dir, ["switch", "-c", branch]);
-    for (const e of edits) {
-      const abs = path.join(dir, e.path);
-      const current = await fs.readFile(abs, "utf8");
-      if (sha256(current) !== sha256(e.before)) throw new Error(`${e.path} at ${targetCommit.slice(0, 12)} does not match the verified input`);
-      await fs.writeFile(abs, e.after);
+    for (const f of o.files) {
+      const abs = path.join(dir, f.path);
+      const current = await fs.readFile(abs, "utf8").catch(() => null);
+      if ((current === null ? null : sha256(current)) !== (f.before === null ? null : sha256(f.before))) throw new Error(`${f.path} at ${o.targetCommit.slice(0, 12)} does not match the verified input`);
+      if (f.after === null) await fs.rm(abs);
+      else {
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, f.after);
+      }
     }
-    await git(dir, ["add", "--", ...intended]);
+    await git(dir, ["add", "-A", "--", ...intended]);
     const status = (await git(dir, ["status", "--porcelain", "--untracked-files=all"])).stdout.split("\n").filter(Boolean);
     const touched = status.map((l) => l.slice(3)).sort();
-    if (JSON.stringify(touched) !== JSON.stringify(intended) || status.some((l) => !l.startsWith("M "))) {
+    if (JSON.stringify(touched) !== JSON.stringify(intended) || status.some((l) => !/^[MAD] /.test(l))) {
       throw new Error(`worktree contains unexpected changes: ${status.join(", ")}`);
     }
     const identity = await commitIdentity(dir);
-    await git(dir, [...identity, "commit", "--no-verify", "-m", fix.prTitle, "-m", `Verified by Crashpad against ${o.base} (${baseCommit.slice(0, 12)}).\nInputs digest: ${fix.plan.inputsDigest}`]);
+    await git(dir, [...identity, "commit", "--no-verify", ...o.commitMessage.flatMap((m) => ["-m", m])]);
     commit = await gitOut(dir, ["rev-parse", "HEAD"]);
-    const changed = (await gitOut(dir, ["diff", "--name-only", targetCommit, commit])).split("\n").filter(Boolean).sort();
+    const parent = await gitOut(dir, ["rev-parse", "HEAD^"]);
+    if (parent !== o.targetCommit) throw new Error(`fix commit parent is ${parent}, expected ${o.targetCommit}`);
+    const changed = (await gitOut(dir, ["diff", "--name-only", o.targetCommit, commit])).split("\n").filter(Boolean).sort();
     if (JSON.stringify(changed) !== JSON.stringify(intended)) throw new Error(`commit touches unexpected files: ${changed.join(", ")}`);
-
-    // 6. Push a brand-new branch, never forcing.
     log(`pushing ${branch}`);
     await git(dir, ["push", remote, `refs/heads/${branch}:refs/heads/${branch}`]);
     pushed = true;
   } catch (err) {
-    return refused(`could not prepare or push the fix branch: ${(err as Error).message}`, 2, fix);
+    return refused(`could not prepare or push the fix branch: ${(err as Error).message}`, 2);
   } finally {
     await git(root, ["worktree", "remove", "--force", dir]).catch(() => {});
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     if (pushed) await git(root, ["branch", "-D", branch]).catch(() => {});
   }
 
-  // 7. Open the draft PR. If this fails, the pushed branch is the recovery point.
-  const { owner, repo } = parsed;
   try {
-    const pr = await o.api.createPullRequest(owner, repo, { title: fix.prTitle, body: fix.prBody, head: branch, base: o.branch, draft: true });
-    return { status: "opened", exitCode: 0, message: `opened draft PR #${pr.number}`, branch, commit, prUrl: pr.html_url, fix };
+    const pr = await o.api.createPullRequest(o.owner, o.repo, { title: o.title, body: o.body, head: branch, base: o.targetBranch, draft: true });
+    return { status: "opened", exitCode: 0, message: `opened draft PR #${pr.number}`, branch, commit, prUrl: pr.html_url };
   } catch (err) {
-    const recovery = `gh pr create --repo ${owner}/${repo} --draft --base ${o.branch} --head ${branch} --title ${JSON.stringify(fix.prTitle)} --body-file pr-body.md`;
+    const recovery = `gh pr create --repo ${o.owner}/${o.repo} --draft --base ${o.targetBranch} --head ${branch} --title ${JSON.stringify(o.title)} --body-file pr-body.md`;
     return {
       status: "pushed-pr-failed",
       exitCode: 2,
@@ -181,7 +244,6 @@ export async function publishFixPr(o: PublishOptions): Promise<PublishResult> {
       branch,
       commit,
       recovery,
-      fix,
     };
   }
 }

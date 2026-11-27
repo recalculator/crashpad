@@ -6,11 +6,15 @@ import { renderSuiteMarkdown } from "./suite/markdown.ts";
 import { runSuite } from "./suite/runner.ts";
 import { VERSION } from "./version.ts";
 
-const HELP = `crashpad ${VERSION} — check whether a change breaks your app's PostgreSQL behavior
+const HELP = `crashpad ${VERSION} — check whether a backend change breaks database, API, configuration,
+permission, or workflow behavior, and repair it with independent verification
 
 Usage:
-  crashpad check   --base <ref> [--head <ref>] [--project <dir>] [--report-dir <dir>] [--format md|json]
-  crashpad fix     --base <ref> [--head <ref>] [--project <dir>] [--out <dir>] [--apply]
+  crashpad check   --base <ref> [--head <ref>] [--project <dir>] [--report-dir <dir>] [--format md|json] [--no-discovery]
+  crashpad repair  --base <ref> [--head <ref> | --branch <b>] [--agent claude|none] [--max-attempts 3] [--max-turns 40]
+                   [--max-budget-usd <n>] [--deadline-min 30] [--attempt-timeout-min 10] [--claude-auth subscription|existing]
+                   [--model <m>] [--no-deterministic] [--out <dir>] [--apply] [--publish --repo <owner/name> [--dry-run]]
+  crashpad fix     --base <ref> [--head <ref>] [--project <dir>] [--out <dir>] [--apply]     (database rename fixer only)
   crashpad fix-pr  --repo <owner/name> --branch <target-branch> --base <ref> [--project <dir>] [--plan <fix-plan.json>] [--remote origin] [--dry-run]
   crashpad comment --report <report.json> --repo <owner/name> --pr <number>
   crashpad validate [--project <dir>]
@@ -45,6 +49,20 @@ export const OPTIONS = {
   "database-url": { type: "string" },
   "keep-databases": { type: "boolean" },
   "no-discovery": { type: "boolean" },
+  agent: { type: "string" },
+  "claude-auth": { type: "string" },
+  model: { type: "string" },
+  "max-attempts": { type: "string" },
+  "max-turns": { type: "string" },
+  "max-budget-usd": { type: "string" },
+  "deadline-min": { type: "string" },
+  "attempt-timeout-min": { type: "string" },
+  "no-deterministic": { type: "boolean" },
+  publish: { type: "boolean" },
+  set: { type: "string", multiple: true },
+  unset: { type: "string", multiple: true },
+  service: { type: "string" },
+  "repo-dir": { type: "string", multiple: true },
   verbose: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean" },
@@ -116,6 +134,8 @@ export async function main(argv: string[], cwd = process.cwd()): Promise<number>
         return await (await import("./commands/comment.ts")).cmdComment(values, cwd);
       case "validate":
         return await (await import("./commands/validate.ts")).cmdValidate(values, cwd);
+      case "repair":
+        return await (await import("./commands/repair.ts")).cmdRepair(values, cwd);
       default:
         throw new UsageError(`unknown command: ${cmd}`);
     }
