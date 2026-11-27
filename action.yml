@@ -1,0 +1,68 @@
+name: Crashpad database checks
+description: Check whether a change breaks your application's PostgreSQL behavior (reads, writes, integrity assertions).
+branding:
+  icon: database
+  color: red
+inputs:
+  project:
+    description: Directory containing crashpad.config.json, relative to the repository root
+    default: "."
+  base:
+    description: Baseline ref or commit. Defaults to the first parent of the PR merge commit (the exact PR base).
+    default: ""
+  database-url:
+    description: PostgreSQL server URL used to create throwaway databases (e.g. a service container)
+    required: true
+  comment:
+    description: Create or update a PR comment (skipped automatically when the token is read-only, e.g. fork PRs)
+    default: "true"
+  github-token:
+    description: Token used for the PR comment
+    default: ${{ github.token }}
+outputs:
+  exit-code:
+    description: 0 = pass, 1 = actionable regression, 2 = could not decide
+    value: ${{ steps.run.outputs.exit_code }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24.x
+    - name: Install Crashpad
+      shell: bash
+      run: npm ci --prefix "$GITHUB_ACTION_PATH" --no-audit --no-fund
+    - name: Run Crashpad
+      id: run
+      shell: bash
+      env:
+        CRASHPAD_DATABASE_URL: ${{ inputs.database-url }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_PROJECT: ${{ inputs.project }}
+      run: |
+        BASE="${INPUT_BASE:-$(git rev-parse HEAD^1)}"
+        set +e
+        node "$GITHUB_ACTION_PATH/bin/crashpad.js" check --base "$BASE" --project "$INPUT_PROJECT" --report-dir crashpad-report > /dev/null
+        code=$?
+        set -e
+        echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+        if [ -f crashpad-report/crashpad-report.md ]; then cat crashpad-report/crashpad-report.md >> "$GITHUB_STEP_SUMMARY"; else echo "Crashpad produced no report (exit $code)" >> "$GITHUB_STEP_SUMMARY"; fi
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: crashpad-report
+        path: crashpad-report/
+        if-no-files-found: ignore
+    - name: PR comment
+      if: always() && inputs.comment == 'true' && github.event_name == 'pull_request' && hashFiles('crashpad-report/crashpad-report.json') != ''
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: node "$GITHUB_ACTION_PATH/bin/crashpad.js" comment --report crashpad-report/crashpad-report.json --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" || true
+    - name: Fail if Crashpad did not pass
+      if: steps.run.outputs.exit_code != '0'
+      shell: bash
+      env:
+        CODE: ${{ steps.run.outputs.exit_code }}
+      run: exit "${CODE:-2}"

@@ -1,0 +1,92 @@
+# Manually triggered: propose, re-verify, and open a DRAFT fix PR for a branch.
+#
+# Trust model: run this from the default branch. Crashpad's code comes from that
+# trusted checkout; the target branch is only read as Git objects (SQL files,
+# migrations, config) and its SQL runs in a throwaway PostgreSQL service. None of
+# the target branch's scripts or dependencies are executed. Only same-repository
+# branches can be targeted.
+name: Crashpad fix PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch containing the breaking change (the fix PR targets it)
+        required: true
+      base_ref:
+        description: Branch the change will merge into (baseline = merge-base with target)
+        required: true
+        default: main
+      project:
+        description: Crashpad project directory
+        required: true
+        default: examples/storefront
+      dry_run:
+        description: Verify only; do not push or open a PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: crashpad-fix-pr-${{ inputs.target_branch }}
+  cancel-in-progress: false
+
+jobs:
+  fix-pr:
+    name: Crashpad draft fix PR
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CRASHPAD_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      TARGET: ${{ inputs.target_branch }}
+      BASE_REF: ${{ inputs.base_ref }}
+      PROJECT: ${{ inputs.project }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Require the trusted default branch
+        if: github.ref_name != github.event.repository.default_branch
+        run: |
+          echo "::error::Run this workflow from the default branch so Crashpad's own code is trusted."
+          exit 2
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      - name: Verify and open draft fix PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRASHPAD_GIT_NAME: github-actions[bot]
+          CRASHPAD_GIT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" "+refs/heads/${TARGET}:refs/remotes/origin/${TARGET}"
+          BASE="$(git merge-base "refs/remotes/origin/${BASE_REF}" "refs/remotes/origin/${TARGET}")"
+          extra=()
+          if [ "$DRY_RUN" = "true" ]; then extra+=(--dry-run); fi
+          set +e
+          node bin/crashpad.js fix-pr --repo "$GITHUB_REPOSITORY" --branch "$TARGET" --base "$BASE" --project "$PROJECT" --out crashpad-fix-pr "${extra[@]}"
+          code=$?
+          set -e
+          [ -f crashpad-fix-pr/pr-description.md ] && cat crashpad-fix-pr/pr-description.md >> "$GITHUB_STEP_SUMMARY"
+          [ -f crashpad-fix-pr/publish-result.json ] && { echo '```json'; cat crashpad-fix-pr/publish-result.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+      - name: Upload fix artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashpad-fix-pr
+          path: crashpad-fix-pr/
+          if-no-files-found: ignore
