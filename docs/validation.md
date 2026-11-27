@@ -51,13 +51,20 @@ Integration tests use a real PostgreSQL server and real Git repositories in temp
 
 All six scenarios produce the expected real results. In scenario 06, the storefront's own integration tests fail before the fix (5 of 7 fail with `column "name" does not exist`). Crashpad's patch is verified against the original baseline. In an isolated worktree with the patch applied, the storefront tests pass 7/7, `crashpad check` exits 0, and the original checkout's status and HEAD are unchanged.
 
-## Live GitHub demonstration (recalculator/crashpad)
+## Live GitHub runs (recalculator/crashpad, 2026-11-27)
 
-- **Demo PR [#1](https://github.com/recalculator/crashpad/pull/1)** (`demo/rename-customer-name`, labeled DEMO, do not merge). It adds the rename migration without updating SQL. The **"Crashpad database checks"** job failed with exit 1, wrote the report to the job summary, uploaded the `crashpad-report` artifact, and posted the PR comment listing the 5 `42703` regressions. CI also fails on this PR, because the sample app itself is broken on that branch, as intended.
-- **Draft fix PR [#2](https://github.com/recalculator/crashpad/pull/2)**, opened by `crashpad fix-pr` run locally with the maintainer's `gh` login. It targets `demo/rename-customer-name` and contains exactly the four rewritten SQL files, with before/after verification evidence. The local checkout's HEAD, status, branches, and worktrees were unchanged afterwards.
-  - Checking the fix branch against `main` with `crashpad check --base origin/main --head origin/crashpad/fix-…` gives **All 13 checks passed (exit 0)**.
-  - PR #2's own Crashpad check reports **exit 2, "existing baseline failure"** for the five checks. This is by design: its base, the demo branch, is itself broken, so Crashpad will not vouch for it. CI on PR #2 also fails, because the scenario fixtures collide with the demo branch's `002_*` migration. Nothing was merged.
-- **Manual fix-PR workflow** (`workflow_dispatch`, dry run, against the same branch): in Actions it fetched the branch, ran the original checks, and re-verified the patch. It then **refused** because the fix branch already existed, demonstrating the no-force guard. It has not been used to open a PR from Actions, because this repository has **"Allow GitHub Actions to create and approve pull requests"** disabled (`can_approve_pull_request_reviews: false`). With that setting off, the documented behavior is a pushed branch plus a recovery command. That path is covered by an automated test, but not live.
+These PRs were opened only to exercise the GitHub integration end to end. Both were **closed without merging** during the cleanup, and their branches were deleted. The PR pages, comments, and Actions run logs below stay available on GitHub.
+
+- **PR [#1](https://github.com/recalculator/crashpad/pull/1)**: branch `demo/rename-customer-name` at `a30a8e5f`, into `main`. It added a `RENAME COLUMN` migration without updating the SQL.
+  - The "Crashpad database checks" job ([run 45919979975](https://github.com/recalculator/crashpad/actions/runs/45919979975/job/140248159837)) failed with exit 1. It wrote the report to the job summary and uploaded the `crashpad-report` artifact.
+  - It posted the PR comment ([comment](https://github.com/recalculator/crashpad/pull/1#issuecomment-7206930056)) listing the five `42703 undefined_column` regressions.
+- **Draft PR [#2](https://github.com/recalculator/crashpad/pull/2)**: branch `crashpad/fix-demo-rename-customer-name-a30a8e5f` at `15eed2da`, into PR #1's branch.
+  - It was opened by `crashpad fix-pr`, run **locally** with the maintainer's `gh` login, not from Actions. It contained exactly the four rewritten SQL files, plus before/after verification evidence in the body.
+  - The local checkout's HEAD, status, branches, and worktrees were unchanged afterwards.
+  - `crashpad check --base origin/main --head origin/crashpad/fix-…` gave **All 13 checks passed (exit 0)**.
+  - Its own PR check ([run 45920097985](https://github.com/recalculator/crashpad/actions/runs/45920097985/job/140248513538)) reported **exit 2, "existing baseline failure"**. This is by design: its base, PR #1's branch, was itself broken, so Crashpad would not vouch for it.
+- **Fix-PR workflow, dry run** ([run 45920220798](https://github.com/recalculator/crashpad/actions/runs/45920220798)), against PR #1's branch. In Actions it fetched the branch, ran the original checks, and re-verified the patch. It then **refused** because the fix branch already existed, which is the no-force guard.
+  - At that time, the repository setting "Allow GitHub Actions to create and approve pull requests" was off, so Actions-based PR creation had not been run live.
 
 ## Not validated
 
