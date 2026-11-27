@@ -37,9 +37,13 @@ export function normalizeRemote(url: string): string {
 export async function repoIdentity(repoRoot: string): Promise<{ id: string; key: string }> {
   const remote = await gitOut(repoRoot, ["config", "--get", "remote.origin.url"]).catch(() => "");
   const id = remote ? normalizeRemote(remote) : `local:${await fs.realpath(repoRoot)}`;
+  return { id, key: keyFor(id) };
+}
+
+/** Storage key for a repository identity (stable, filesystem-safe). */
+export function keyFor(id: string): string {
   const slug = id.replace(/^local:/, "").replace(/[^A-Za-z0-9._-]+/g, "_").slice(-60);
-  const key = `${slug}-${createHash("sha256").update(id).digest("hex").slice(0, 10)}`;
-  return { id, key };
+  return `${slug}-${createHash("sha256").update(id).digest("hex").slice(0, 10)}`;
 }
 
 export function repoDir(key: string): string {

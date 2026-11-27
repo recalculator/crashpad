@@ -366,10 +366,10 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
   }
 
   // ---- 3–5. Runtime: configuration/startup, API behavior, permissions, workflows
-  if (cc.app) {
+  if (cc.app?.start) {
     for (const a of ["config", "permissions", "workflows"] as const) applicable.add(a);
     if (contract || cc.http) applicable.add("api");
-    if (!bc.app) {
+    if (!bc.app?.start) {
       missing.config.push("the baseline has no application start configuration; runtime checks need one on both versions");
     } else {
       const dbScripts = async (side: "base" | "candidate"): Promise<{ scripts: RuntimeSide["dbScripts"]; unavailable?: string }> => {

@@ -42,8 +42,8 @@ export const AppConfigSchema = z
     install: argv.nullable().default(null),
     /** Build command run after install (argv, no shell), e.g. a TypeScript compile. */
     build: argv.nullable().default(null),
-    /** Command that starts the HTTP server (argv, no shell). */
-    start: argv,
+    /** Command that starts the HTTP server (argv, no shell). Runtime checks need it. */
+    start: argv.optional(),
     /** Test-only environment values. Never production values. */
     env: z.record(envName, z.string()).default({}),
     envSchema: EnvSchemaRef.optional(),

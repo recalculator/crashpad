@@ -43,5 +43,22 @@ describe("packaged CLI", () => {
     expect(stdout).toContain("permissions:note-visible-to-owner-and-admin");
     expect(stdout).toContain("Configuration: discovered");
     expect(fs.existsSync(path.join(repo, "crashpad.config.json"))).toBe(false);
+
+    // Onboarding with the installed CLI: discovery, then an override stored outside the repository.
+    const home = tempDir();
+    const run = (args: string[], cwd: string) => execFileSync(bin, args, { cwd, encoding: "utf8", env: { ...process.env, CRASHPAD_HOME: home } });
+    const discovered = run(["discover"], repo);
+    for (const area of ["Database compatibility", "API contracts", "Configuration and startup", "Permissions", "Application workflows"]) expect(discovered).toMatch(new RegExp(`${area}\\s+ready`));
+    const partial = buildScenarioRepo({ ...s, replace: [{ file: "package.json", find: '"start": "node server.js",', with: "" }], remove: ["crashpad.http.json"] }, tempDir(), NOTES_API);
+    const before = run(["discover"], partial);
+    expect(before).toContain('missing: no "start" script in package.json');
+    expect(before).toMatch(/Permissions\s+needs input/);
+    expect(before).toContain("access expectations must be stated explicitly and are never inferred");
+    run(["settings", "--set", 'app.start=["node","server.js"]'], partial);
+    const after = run(["discover"], partial);
+    expect(after).not.toContain('no "start" script');
+    expect(after).toMatch(/Configuration and startup\s+ready/);
+    expect(after).toContain("[discovered + Crashpad settings]");
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: partial, encoding: "utf8" })).toBe("");
   });
 });

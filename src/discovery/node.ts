@@ -118,7 +118,7 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
       facts.push(`test script: ${scripts.test}`);
     }
     if (tests.length) layer.tests = tests;
-    if (Object.keys(app).length && app.start) layer.app = app;
+    if (Object.keys(app).length) layer.app = app;
     if (postgresClient) facts.push(`PostgreSQL client dependency: ${postgresClient}`);
   } else {
     need("config", "no package.json: only Node.js projects are supported for automatic startup discovery", "app.start");
@@ -238,7 +238,8 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
   } else {
     need("config", "no environment schema (.env.example or env.schema.json); required variables cannot be validated", "app.envSchema");
   }
-  if (layer.app) {
+  if (pkg) {
+    layer.app ??= {};
     if (dotenv) layer.app.envSchema = { path: dotenv, format: "dotenv-example" };
     else if (jsonEnv) layer.app.envSchema = { path: jsonEnv, format: "json-schema" };
     const dbVar = DB_URL_NAMES.find((n) => envKeys.includes(n));

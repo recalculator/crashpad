@@ -203,7 +203,7 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
     }
     const schema = p.side.envSchema?.ok ? p.side.envSchema.schema : null;
     const { env, appKeys } = buildTestEnv({ schema, useExampleValues: app.useExampleValues, explicit: app.env, generated });
-    const proc = new AppProcess({ command: app.start, cwd: p.appDir, env, port });
+    const proc = new AppProcess({ command: app.start!, cwd: p.appDir, env, port });
     try {
       const start = await proc.start(app.readiness, input.signal);
       let value: T | undefined;
@@ -277,7 +277,7 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
       const r = await withApp(p, null);
       const ok = r.start.status === "ready";
       const evidence: Evidence[] = [
-        { kind: "note", side: which, label: "command", detail: `cd ${path.posix.join(p.side.projectDir, p.side.app.root)} && ${p.side.app.start.join(" ")}  (env: ${r.appKeys.join(", ")})` },
+        { kind: "note", side: which, label: "command", detail: `cd ${path.posix.join(p.side.projectDir, p.side.app.root)} && ${p.side.app.start!.join(" ")}  (env: ${r.appKeys.join(", ")})` },
       ];
       if (!ok || r.logs.trim()) evidence.push({ kind: "log", side: which, label: "application output (last lines)", detail: lastLines(r.logs) || "(no output)" });
       const summary = startSummary(r.start, p.side.app.readiness);
@@ -294,7 +294,7 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
       else if (verdict.reason === "expectation-failed") verdict = { classification: "regression", reason: cStart.outcome.summary.startsWith("not ready") ? "readiness-timeout" : "startup-failed", message: `Started before this change; now ${cStart.outcome.summary}` };
       findings.push(
         mkFinding("config", "startup", "startup", "Application startup and readiness", verdict.classification, verdict.reason, verdict.message, toSide(bStart.outcome), toSide(cStart.outcome), [...bStart.outcome.evidence, ...cStart.outcome.evidence], false, {
-          operation: input.candidate.app.start.join(" "),
+          operation: input.candidate.app.start!.join(" "),
         }),
       );
       add(ran, "config", `startup and readiness within ${input.candidate.app.readiness.timeoutMs} ms (${input.candidate.app.readiness.path ? `GET ${input.candidate.app.readiness.path}` : "port open"})`);

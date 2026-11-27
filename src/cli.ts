@@ -15,6 +15,13 @@ Usage:
                    [--max-budget-usd <n>] [--deadline-min 30] [--attempt-timeout-min 10] [--claude-auth subscription|existing]
                    [--model <m>] [--no-deterministic] [--out <dir>] [--apply] [--publish --repo <owner/name> [--dry-run]]
   crashpad fix     --base <ref> [--head <ref>] [--project <dir>] [--out <dir>] [--apply]     (database rename fixer only)
+  crashpad setup   [--repo-dir <path>...]          check prerequisites, Claude Code, GitHub connection; discover repositories
+  crashpad discover [--project <dir>]               show what Crashpad found in this repository and what is missing
+  crashpad settings [--set key=value] [--unset key] per-repository settings stored in Crashpad's storage (not the repo)
+  crashpad connect --service <url> [--name <n>]     pair this computer with the Crashpad GitHub App (GitHub device flow)
+  crashpad companion [status] [--once] [--enable-repair|--disable-repair]   run the local companion
+  crashpad policy  --repo <owner/name> [--auto-repair on|off] [--max-repairs <n>]
+  crashpad service [manifest --url <public url>]    run the GitHub App service (or print its App manifest)
   crashpad fix-pr  --repo <owner/name> --branch <target-branch> --base <ref> [--project <dir>] [--plan <fix-plan.json>] [--remote origin] [--dry-run]
   crashpad comment --report <report.json> --repo <owner/name> --pr <number>
   crashpad validate [--project <dir>]
@@ -63,6 +70,15 @@ export const OPTIONS = {
   unset: { type: "string", multiple: true },
   service: { type: "string" },
   "repo-dir": { type: "string", multiple: true },
+  name: { type: "string" },
+  url: { type: "string" },
+  port: { type: "string" },
+  host: { type: "string" },
+  once: { type: "boolean" },
+  "enable-repair": { type: "boolean" },
+  "disable-repair": { type: "boolean" },
+  "auto-repair": { type: "string" },
+  "max-repairs": { type: "string" },
   verbose: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean" },
@@ -72,7 +88,7 @@ export class UsageError extends Error {
   override name = "UsageError";
 }
 
-export type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>["values"];
+export type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>["values"] & { _sub?: string };
 
 function need(v: Values, key: keyof Values): string {
   const x = v[key];
@@ -112,7 +128,8 @@ export async function main(argv: string[], cwd = process.cwd()): Promise<number>
     process.stderr.write(`crashpad: ${(err as Error).message}\n\n${HELP}`);
     return 2;
   }
-  const { values, positionals } = parsed;
+  const { positionals } = parsed;
+  const values: Values = { ...parsed.values, ...(positionals[1] ? { _sub: positionals[1] } : {}) };
   if (values.version) {
     process.stdout.write(`${VERSION}\n`);
     return 0;
@@ -136,6 +153,20 @@ export async function main(argv: string[], cwd = process.cwd()): Promise<number>
         return await (await import("./commands/validate.ts")).cmdValidate(values, cwd);
       case "repair":
         return await (await import("./commands/repair.ts")).cmdRepair(values, cwd);
+      case "service":
+        return await (await import("./commands/companion.ts")).cmdService(values);
+      case "connect":
+        return await (await import("./commands/companion.ts")).cmdConnect(values);
+      case "companion":
+        return await (await import("./commands/companion.ts")).cmdCompanion(values);
+      case "policy":
+        return await (await import("./commands/companion.ts")).cmdPolicy(values);
+      case "discover":
+        return await (await import("./commands/setup.ts")).cmdDiscover(values, cwd);
+      case "settings":
+        return await (await import("./commands/setup.ts")).cmdSettings(values, cwd);
+      case "setup":
+        return await (await import("./commands/setup.ts")).cmdSetup(values, cwd);
       default:
         throw new UsageError(`unknown command: ${cmd}`);
     }
