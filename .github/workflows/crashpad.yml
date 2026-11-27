@@ -1,6 +1,7 @@
-# Runs this repository's composite action (action.yml) on every pull request,
-# against the storefront test fixture. This is a live self-test of the GitHub
-# integration: check result, job summary, report artifact, and PR comment.
+# Runs this repository's composite action (action.yml) against the storefront
+# test fixture on every pull request and every push to main. It is a live
+# self-test of the GitHub integration: check result, job summary, report
+# artifact, and (on pull requests) the PR comment.
 #
 # Security model: `pull_request` (never `pull_request_target`), so PR code runs
 # with the PR's own token. For fork PRs GitHub makes that token read-only: the
@@ -9,6 +10,8 @@ name: Crashpad
 
 on:
   pull_request:
+  push:
+    branches: [main] # baseline = the pushed commit's first parent
 
 permissions:
   contents: read
