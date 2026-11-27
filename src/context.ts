@@ -47,7 +47,7 @@ export async function resolveContext(opts: ContextOptions): Promise<RunContext> 
   } else {
     const head = await git(root, ["rev-parse", "--verify", "HEAD"]).then((r) => r.stdout.trim()).catch(() => null);
     const dirty = (await git(root, ["status", "--porcelain", "--", projectDir])).stdout.trim().length > 0;
-    candidate = { label: dirty ? "working tree (uncommitted changes)" : "working tree", commit: head, source: new FsSource(root) };
+    candidate = { label: dirty ? "working tree (uncommitted changes)" : "HEAD (clean working tree)", commit: head, source: new FsSource(root) };
   }
   return {
     repoRoot: root,

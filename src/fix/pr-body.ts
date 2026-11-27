@@ -38,7 +38,7 @@ export function renderPrBody(plan: FixPlan, original: Report, verification: Repo
   out.push("### Verification");
   out.push("");
   out.push(
-    `Crashpad re-ran **every** configured check. The baseline side ran the **original** queries from \`${plan.base.ref}\` (${plan.base.commit.slice(0, 12)}) on the baseline database; the candidate side ran the **patched** queries on the migrated database. Output columns, rows, affected-row counts, and assertions were compared against that original baseline contract.`,
+    `Crashpad re-ran **every** configured check. The baseline side ran the **original** queries from ${/^[0-9a-f]{40}$/.test(plan.base.ref) ? `\`${plan.base.commit.slice(0, 12)}\`` : `\`${plan.base.ref}\` (${plan.base.commit.slice(0, 12)})`} on the baseline database; the candidate side ran the **patched** queries on the migrated database. Output columns, rows, affected-row counts, and assertions were compared against that original baseline contract.`,
   );
   out.push("");
   if (verification) {

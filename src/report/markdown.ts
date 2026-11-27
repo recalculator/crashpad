@@ -106,7 +106,8 @@ export function renderMarkdown(r: Report, opts: { title?: string; maxDetails?: n
   out.push("");
   out.push(statusLine(r));
   out.push("");
-  out.push(`Baseline \`${r.base.ref}\` (${r.base.commit.slice(0, 12)}) → candidate ${r.candidate.label}${r.candidate.commit ? ` (${r.candidate.commit.slice(0, 12)})` : ""} · project \`${r.project}\``);
+  const baseRef = /^[0-9a-f]{40}$/.test(r.base.ref) ? `\`${r.base.commit.slice(0, 12)}\`` : `\`${r.base.ref}\` (${r.base.commit.slice(0, 12)})`;
+  out.push(`Baseline ${baseRef} → candidate ${r.candidate.label}${r.candidate.commit ? ` (${r.candidate.commit.slice(0, 12)})` : ""} · project \`${r.project}\``);
   out.push("");
 
   if (r.problems.length) {
