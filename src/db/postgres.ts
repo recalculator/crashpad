@@ -168,7 +168,7 @@ export class PgSession {
       const preparedParams = params.map(encodeParam);
       let result: QueryResult;
       if (opts.readOnly) {
-        const cursor = c.query(new Cursor(sql, preparedParams, { types: RAW_TEXT_TYPES }));
+        const cursor = c.query(new Cursor(sql, preparedParams, { types: RAW_TEXT_TYPES, rowMode: "array" }));
         const { rows, fields } = await new Promise<{ rows: unknown[][]; fields: any[] }>((resolve, reject) => {
           cursor.read(opts.maxRows + 1, (err, rows, res) => (err ? reject(err) : resolve({ rows: rows as unknown[][], fields: res.fields })));
         });

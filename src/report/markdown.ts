@@ -1,4 +1,5 @@
 import type { CheckFinding, Classification, Report, SideOutcome } from "./types.ts";
+import { pgErrorName } from "../db/errors.ts";
 
 export const COMMENT_MARKER = "<!-- crashpad-report -->";
 
@@ -39,7 +40,7 @@ function side(o: SideOutcome): string {
       if (o.affectedRows !== undefined) return `ok, ${o.affectedRows} row(s) affected`;
       return `ok, ${o.rowCount} row(s)${o.truncated ? " (limit exceeded)" : ""}`;
     case "error":
-      return `error ${o.error?.code ?? ""}`.trim();
+      return o.error?.code ? `error ${o.error.code} ${pgErrorName(o.error.code)}` : "error";
     case "invalid":
       return "invalid";
     case "not-present":
@@ -139,8 +140,7 @@ export function renderMarkdown(r: Report, opts: { title?: string; maxDetails?: n
     out.push("| Check | Category | Result | Baseline | Candidate | Source |");
     out.push("|---|---|---|---|---|---|");
     for (const c of sorted) {
-      const err = c.candidate.error?.code ? ` \`${c.candidate.error.code}\`` : "";
-      out.push(`| \`${c.id}\`${c.isNew ? " 🆕" : ""} | ${c.category} | ${LABEL[c.classification]} | ${cell(side(c.baseline))} | ${cell(side(c.candidate))}${err} | ${where(c)} |`);
+      out.push(`| \`${c.id}\`${c.isNew ? " 🆕" : ""} | ${c.category} | ${LABEL[c.classification]} | ${cell(side(c.baseline))} | ${cell(side(c.candidate))} | ${where(c)} |`);
     }
     out.push("");
     const notable = sorted.filter((c) => c.classification !== "pass");
