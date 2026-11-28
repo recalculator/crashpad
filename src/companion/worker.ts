@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { discoverer } from "../discovery/index.ts";
+import { discoverer, storedScenarios } from "../discovery/index.ts";
 import { crashpadHome, keyFor, loadSettings, normalizeRemote, repoIdentity } from "../discovery/store.ts";
 import { git, gitOut } from "../git.ts";
 import { ClaudeCodeAgent } from "../repair/claude.ts";
@@ -91,6 +91,8 @@ export async function runJob(o: WorkerOptions, job: LeasedJob): Promise<{ status
     const baseCommit = await gitOut(dir, ["merge-base", job.baseSha, job.headSha]);
     const { key } = await repoIdentity(dir);
     const settings = (await loadSettings(key))?.config;
+    // Loaded once per job: a repair's verifications all use this same copy.
+    const storedHttp = await storedScenarios(key);
     if (job.kind === "check") {
       const { report } = await runSuite({
         repoRoot: dir,
@@ -99,6 +101,7 @@ export async function runJob(o: WorkerOptions, job: LeasedJob): Promise<{ status
         candidate: { label: `#${job.prNumber} (${job.headRef})`, commit: job.headSha, source: new GitSource(dir, job.headSha, `git ${job.headSha.slice(0, 12)}`), code: { root: dir, commit: job.headSha } },
         databaseUrl: o.databaseUrl,
         ...(settings ? { settings } : {}),
+        ...(storedHttp ? { storedHttp } : {}),
         discover: discoverer(),
         signal: controller.signal,
         log: (m) => o.log(`  ${m}`),
@@ -120,6 +123,7 @@ export async function runJob(o: WorkerOptions, job: LeasedJob): Promise<{ status
       candidate: { label: `#${job.prNumber} (${job.headRef})`, commit: job.headSha },
       databaseUrl: o.databaseUrl,
       ...(settings ? { settings } : {}),
+      ...(storedHttp ? { storedHttp } : {}),
       discover: discoverer(),
       agent: new ClaudeCodeAgent({ auth: o.config.repair.claudeAuth, ...(o.claudeBin ? { bin: o.claudeBin } : {}), ...(o.claudeEnv ? { env: o.claudeEnv } : {}) }),
       maxAttempts: o.config.repair.maxAttempts,
@@ -131,7 +135,8 @@ export async function runJob(o: WorkerOptions, job: LeasedJob): Promise<{ status
       log: (m) => o.log(`  ${m}`),
     });
     const repairId = randomUUID();
-    const attemptsMd = result.attempts.map((a) => `- attempt ${a.attempt} (${a.proposer}): ${a.verdict}: ${a.reason}`).join("\n");
+    const usage = (a: (typeof result.attempts)[number]) => [a.agent?.turns !== undefined ? `${a.agent.turns} turns` : null, a.agent?.costUsd !== undefined ? `est. $${a.agent.costUsd.toFixed(2)}` : null].filter(Boolean).join(", ");
+    const attemptsMd = result.attempts.map((a) => `- attempt ${a.attempt} (${a.proposer}${usage(a) ? `, ${usage(a)}` : ""}): ${a.verdict}: ${a.reason}`).join("\n");
     if (result.outcome !== "verified") {
       await o.client.complete(job.id, { exitCode: result.exitCode === 0 ? 2 : result.exitCode, headline: `Repair ${result.outcome}: ${result.message}`.slice(0, 250), markdown: `**${result.outcome}**: ${result.message}\n\n${attemptsMd}\n\nNothing was published.` });
       return { status: result.outcome };

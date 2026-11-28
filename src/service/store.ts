@@ -92,6 +92,18 @@ export class ServiceStore {
     fs.renameSync(tmp, this.file);
   }
 
+  /** Whether state can be persisted (the directory exists or can be created, and is writable). */
+  writable(): boolean {
+    if (!this.file) return true;
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
+      fs.accessSync(path.dirname(this.file), fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Replayed webhook deliveries are ignored (GitHub may redeliver). */
   seenDelivery(id: string | undefined): boolean {
     if (!id) return false;

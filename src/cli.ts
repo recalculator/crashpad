@@ -19,10 +19,16 @@ Usage:
   crashpad setup   [--repo-dir <path>...]          check prerequisites, Claude Code, GitHub connection; discover repositories
   crashpad discover [--project <dir>]               show what Crashpad found in this repository and what is missing
   crashpad settings [--set key=value] [--unset key] per-repository settings stored in Crashpad's storage (not the repo)
+  crashpad scenarios [--import <file> | --remove] [--repo <owner/name>]
+                                                    runtime scenarios (crashpad.http.json format) kept in Crashpad's storage
   crashpad connect --service <url> [--name <n>]     pair this computer with the Crashpad GitHub App (GitHub device flow)
   crashpad companion [status] [--once] [--enable-repair|--disable-repair]   run the local companion
   crashpad policy  --repo <owner/name> [--auto-repair on|off] [--max-repairs <n>]
-  crashpad service [manifest --url <public url>]    run the GitHub App service (or print its App manifest)
+  crashpad service                                  run the GitHub App service (configuration from CRASHPAD_* variables)
+  crashpad service check [--online]                 validate the service configuration (--online also asks GitHub)
+  crashpad service manifest --url <https url>       print the App manifest (permissions and events)
+  crashpad service register --url <https url> [--org <org>] [--out <dir>] [--port 3999]
+                                                    register the App from its manifest; writes its credentials locally
   crashpad fix-pr  --repo <owner/name> --branch <target-branch> --base <ref> [--project <dir>] [--plan <fix-plan.json>] [--remote origin] [--dry-run]
   crashpad comment --report <report.json> --repo <owner/name> --pr <number>
   crashpad validate [--project <dir>]
@@ -71,6 +77,10 @@ export const OPTIONS = {
   unset: { type: "string", multiple: true },
   service: { type: "string" },
   "repo-dir": { type: "string", multiple: true },
+  import: { type: "string" },
+  remove: { type: "boolean" },
+  online: { type: "boolean" },
+  org: { type: "string" },
   name: { type: "string" },
   url: { type: "string" },
   port: { type: "string" },
@@ -106,12 +116,12 @@ export async function writeReport(dir: string, report: object, markdown: string,
 async function cmdCheck(v: Values, cwd: string): Promise<number> {
   const ctx = await resolveContext({ cwd, base: need(v, "base"), head: v.head, project: v.project, databaseUrl: v["database-url"] });
   const log = v.verbose ? (m: string) => process.stderr.write(`crashpad: ${m}\n`) : undefined;
-  const { discoverer, settingsFor } = await import("./discovery/index.ts");
-  const settings = v["no-discovery"] ? undefined : await settingsFor(ctx.repoRoot);
+  const { discoverer, repoInputsFor } = await import("./discovery/index.ts");
+  const inputs = v["no-discovery"] ? {} : await repoInputsFor(ctx.repoRoot);
   const { report } = await runSuite({
     ...suiteInputFrom(ctx, databaseUrl(v["database-url"])),
     discover: v["no-discovery"] ? false : discoverer(),
-    ...(settings ? { settings } : {}),
+    ...inputs,
     keepResources: !!v["keep-databases"],
     ...(log ? { log } : {}),
   });
@@ -166,6 +176,8 @@ export async function main(argv: string[], cwd = process.cwd()): Promise<number>
         return await (await import("./commands/setup.ts")).cmdDiscover(values, cwd);
       case "settings":
         return await (await import("./commands/setup.ts")).cmdSettings(values, cwd);
+      case "scenarios":
+        return await (await import("./commands/setup.ts")).cmdScenarios(values, cwd);
       case "setup":
         return await (await import("./commands/setup.ts")).cmdSetup(values, cwd);
       default:

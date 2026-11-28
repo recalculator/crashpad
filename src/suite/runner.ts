@@ -32,6 +32,18 @@ export interface Discovery {
 
 export type Discoverer = (source: Source, projectDir: string) => Promise<Discovery>;
 
+/**
+ * Runtime scenarios kept in Crashpad's per-repository storage instead of the repository.
+ * They are not versioned with the code, so the SAME expectations apply to the baseline
+ * and the candidate. A repository's own crashpad.http.json takes precedence.
+ */
+export interface StoredHttp {
+  path: string;
+  manifest: HttpManifest;
+  /** The file's exact contents when loaded (repair restores it if anything changes it). */
+  raw: string;
+}
+
 export interface SuiteInput {
   repoRoot: string;
   projectDir: string;
@@ -53,6 +65,8 @@ export interface SuiteInput {
   databaseUrl: string;
   /** Crashpad's stored settings for this repository (a config layer). */
   settings?: ConfigLayer;
+  /** Runtime scenarios from Crashpad's storage (used when the repository has none). */
+  storedHttp?: StoredHttp;
   /** Automatic discovery; `false` disables it. */
   discover?: Discoverer | false;
   keepResources?: boolean;
@@ -95,7 +109,7 @@ async function resolveSide(source: Source, projectDir: string, input: SuiteInput
   }
   const config = parseEffective(mergeLayers(...layers), `${label} configuration (${sources.join(" + ") || "none"})`);
   const overrides = mergeLayers(...layers.slice(input.discover ? 1 : 0));
-  const has = (key: string) => key.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), overrides) !== undefined;
+  const has = (key: string) => (key === "http.checks" && !!input.storedHttp) || key.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), overrides) !== undefined;
   const missing: Partial<Record<Area, string[]>> = {};
   for (const m of discovered) if (!m.key || !has(m.key)) (missing[m.area] ??= []).push(m.message);
   return { config, sources, missing };
@@ -338,6 +352,10 @@ async function suite(input: SuiteInput, trees: CodeTrees): Promise<SuiteResult> 
   for (const a of AREAS) missing[a].push(...(cand.missing[a] ?? []));
   const bc = base.config;
   const cc = cand.config;
+  // Stored scenarios apply only when the repository does not define its own.
+  const stored = !cc.http && !bc.http ? (input.storedHttp ?? null) : null;
+  if (stored) for (const a of ["api", "permissions", "workflows"] as const) if (stored.manifest.checks.some((c) => c.area === a)) ran[a].push(`scenarios from Crashpad's storage (${stored.path}), not from the repository: the same expectations are applied to both versions`);
+  if (input.storedHttp && (cc.http || bc.http)) ran.permissions.push(`the repository's ${cc.http?.checks ?? bc.http!.checks} is used; scenarios stored in Crashpad's storage are ignored`);
 
   // ---- 1. Database compatibility
   if (bc.database || cc.database) {
@@ -427,7 +445,7 @@ async function suite(input: SuiteInput, trees: CodeTrees): Promise<SuiteResult> 
   // ---- 3–5. Runtime: configuration/startup, API behavior, permissions, workflows
   if (cc.app?.start) {
     for (const a of ["config", "permissions", "workflows"] as const) applicable.add(a);
-    if (contract || cc.http) applicable.add("api");
+    if (contract || cc.http || stored) applicable.add("api");
     if (!bc.app?.start) {
       missing.config.push("the baseline has no application start configuration; runtime checks need one on both versions");
     } else {
@@ -452,7 +470,7 @@ async function suite(input: SuiteInput, trees: CodeTrees): Promise<SuiteResult> 
       };
       const at = (p: string, what: string) => projectPath(input.projectDir, p, what);
       const envOf = async (src: Source, c: SuiteConfig): Promise<EnvSchemaLoad | null> => (c.app?.envSchema ? loadEnvSchema(src, { ...c.app.envSchema, path: at(c.app.envSchema.path, "app.envSchema.path") }) : null);
-      const httpOf = async (src: Source, c: SuiteConfig): Promise<HttpManifest | null> => (c.http ? loadHttpManifest(src, at(c.http.checks, "http.checks")) : null);
+      const httpOf = async (src: Source, c: SuiteConfig): Promise<HttpManifest | null> => (c.http ? loadHttpManifest(src, at(c.http.checks, "http.checks")) : (stored?.manifest ?? null));
       try {
         const bScripts = await dbScripts("base");
         const cScripts = await dbScripts("candidate");
@@ -501,7 +519,7 @@ async function suite(input: SuiteInput, trees: CodeTrees): Promise<SuiteResult> 
     }
   } else {
     if (!missing.config.length) missing.config.push("no application start command configured or discovered; startup, runtime API, permission, and workflow checks need one");
-    if (cc.http) missing.permissions.push("permission scenarios are configured but there is no application start command to run them");
+    if (cc.http || stored) missing.permissions.push("permission scenarios are configured but there is no application start command to run them");
     // Without a start command the project's own build and tests still run (no database is provided).
     if (cc.app && (cc.app.build || cc.tests?.length)) {
       const sides = [

@@ -17,7 +17,7 @@ This is a recommendation, not a record: nothing has been deployed.
 - state is a single JSON file written by that process;
 - the `job` wake-up event is in memory.
 
-**Software.** Node.js 22.18 or later, and Crashpad installed from the `npm pack` archive (`npm install -g ./crashpad-0.2.0.tgz`). The host needs no PostgreSQL, Git checkout, or Claude Code. The service never runs repository code.
+**Software.** Node.js 22.18 or later, and Crashpad installed from the `npm pack` archive (`npm install -g ./crashpad-0.3.0.tgz`). The host needs no PostgreSQL, Git checkout, or Claude Code. The service never runs repository code.
 
 **Configuration** (environment variables):
 
@@ -71,47 +71,58 @@ StateDirectory=crashpad                         # /var/lib/crashpad for CRASHPAD
 WantedBy=multi-user.target
 ```
 
-**Account actions, in order** (all yours; each needs your GitHub login):
+**Deployment package.** Everything above is packaged in [`deploy/`](../deploy/README.md), which also ships inside the npm archive:
 
-1. Choose the App owner. Use your personal account (`recalculator`) unless the App will serve an organization.
-2. Register the App from the manifest (step 1 below) and set the webhook secret.
-3. Turn on **Enable Device Flow**, generate the private key, and note the App ID, client ID, and slug.
-4. Deploy the service with those values and confirm that `https://<host>/healthz` returns `{"ok":true}`. Use the App's **Advanced** tab to check that the `ping` delivery got a 200.
-5. Install the App on **selected repositories**, starting with one low-risk repository you own. The trial repository, `Willo-Story-Generation`, is a good first candidate.
-6. On your computer: `crashpad connect --service https://<host>`, then `crashpad setup`, then `crashpad companion`. Run `crashpad companion --enable-repair` only if you want Claude repairs.
-7. Open a small test PR and confirm the **Crashpad** check moves from pending to running to completed. Then test the offline message by stopping the companion.
+- `install.sh`, which creates the user and directories, installs the configuration with mode 600 and the units, validates, and starts;
+- the systemd unit, with `ExecStartPre=crashpad service check`;
+- the daily backup timer and `backup.sh`;
+- the Caddyfile, exposing only the service's paths;
+- `healthcheck.sh`.
+
+**Account actions, in order.** These are all yours, and each needs your GitHub login or your hosting account. The details are in [deploy/README.md](../deploy/README.md#steps).
+
+1. **Host and name.** Get the host (for example a small VPS) and a DNS name pointing at it. Install Node.js 22.18+ (system-wide) and Caddy on it.
+2. **Register the App** from your computer: `crashpad service register --url https://<host>`. Add `--org <org>` for an organization-owned App; otherwise it is owned by your personal account. Confirm on GitHub. The private key and `service.env` are written locally with mode 600.
+3. **Enable Device Flow** in the App's settings.
+4. **Deploy:** copy the archive and the two credential files to the host, then run `sudo sh package/deploy/install.sh …`. Install the Caddyfile.
+5. **Verify:**
+   - `deploy/healthcheck.sh https://<host>`;
+   - on the host, `crashpad service check --online`;
+   - redeliver the App's `ping` from **Advanced**, and expect a 200.
+6. **Install the App** on **selected repositories**: start with one low-risk repository you own that has something for Crashpad to check.
+7. **Connect your computer:** `crashpad connect --service https://<host>`, `crashpad setup`, then `crashpad companion --enable-repair` (repairs are optional), and keep `crashpad companion` running.
+8. Run the [acceptance test](acceptance.md).
 
 **Before you rely on it:** none of the GitHub calls have run against github.com yet (see the end of this page). Treat the first week as validation, and keep the GitHub Actions integration if you already use it.
 
 ## 1. Register the App
 
-1. Print a manifest with your service's public URL:
-   ```sh
-   crashpad service manifest --url https://crashpad.example.com > manifest.json
-   ```
-   The manifest requests these permissions: **Checks: write**, **Contents: write** (to create fix branches), **Pull requests: write** (draft fix PRs), and **Metadata: read**. It subscribes to the `pull_request` and `check_run` events. GitHub also sends `installation` and `installation_repositories` events to every App.
-2. Register it, either with GitHub's [manifest flow](https://docs.github.com/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) or by entering the same values under **Settings → Developer settings → GitHub Apps → New GitHub App**:
-   - Webhook URL: `https://crashpad.example.com/github/webhook`.
-   - Webhook secret: a long random string.
-   - Keep the App **private** unless others should install it.
-3. In the App's settings:
-   - Turn on **"Enable Device Flow"**. The companion pairs with it.
-   - Generate a **private key** and download the `.pem` file.
-   - Note the App ID, client ID, and slug.
+`crashpad service register --url https://crashpad.example.com` serves a one-shot local page at `http://localhost:3999/`. It posts the manifest to GitHub (`/settings/apps/new`, or `/organizations/<org>/settings/apps/new` with `--org`). After you confirm, GitHub redirects back to localhost with a one-time code. Crashpad then exchanges the code (`POST /app-manifests/{code}/conversions`) and writes two files with mode 600:
+
+- `crashpad-app-credentials/app.private-key.pem`;
+- `crashpad-app-credentials/service.env`: App ID, client ID, slug, webhook secret, and the host paths.
+
+The code works once and expires after an hour. Existing files are never overwritten.
+
+`crashpad service manifest --url https://crashpad.example.com` prints the same manifest, if you prefer GitHub's manual **New GitHub App** form. The manifest:
+
+- requests **Checks: write**, **Contents: write** (to create fix branches), **Pull requests: write** (draft fix PRs), and **Metadata: read**;
+- subscribes to `pull_request` and `check_run`; GitHub also sends `installation` and `installation_repositories` to every App;
+- keeps the App **private**.
+
+Then, in the App's settings, turn on **"Enable Device Flow"**. The manifest cannot set it, and the companion pairs with it.
 
 ## 2. Run the service
 
+With the deployment package, `install.sh` installs `/etc/crashpad/service.env` and starts the unit. To run it by hand:
+
 ```sh
-export CRASHPAD_GITHUB_APP_ID=123456
-export CRASHPAD_GITHUB_CLIENT_ID=Iv1.xxxxxxxx
-export CRASHPAD_GITHUB_APP_SLUG=crashpad-yourname     # bot login <slug>[bot], used for loop prevention
-export CRASHPAD_GITHUB_PRIVATE_KEY_FILE=/secure/path/crashpad.private-key.pem
-export CRASHPAD_GITHUB_WEBHOOK_SECRET=…               # the same secret as in the App settings
-export CRASHPAD_SERVICE_DATA=/var/lib/crashpad/state.json
-crashpad service --host 0.0.0.0 --port 8787           # put it behind HTTPS (a reverse proxy or a platform's TLS)
+set -a; . ./service.env; set +a        # the file written by crashpad service register
+crashpad service check --online        # validate locally, then ask GitHub whether ID, key, slug, and client ID match
+crashpad service --host 127.0.0.1 --port 8787   # behind HTTPS (deploy/Caddyfile)
 ```
 
-The App's private key and webhook secret stay on this host. They are unrelated to anyone's Claude Code sign-in.
+`crashpad service` runs the same validation and refuses to start if anything is wrong. The App's private key and webhook secret stay on this host; they are unrelated to anyone's Claude Code sign-in. `GET /healthz` returns `{"ok":true,"version":…,"storage":"ok","companionsOnline":N}`, or 503 if the state directory is not writable.
 
 ## 3. Install the App
 
@@ -147,6 +158,8 @@ All of the following has been exercised only against the fake GitHub in `test/in
 - real webhook deliveries and their payload variants;
 - check-run rendering and annotation limits on github.com;
 - device-flow pairing against github.com;
-- the Git Data API calls that create fix branches.
+- the Git Data API calls that create fix branches;
+- manifest registration and the code exchange (`crashpad service register`), and `crashpad service check --online`;
+- the systemd units, `install.sh`, and the Caddyfile on a real host.
 
-Run steps 1–4 and open a test PR in a repository you control to verify them.
+The [acceptance test](acceptance.md) verifies them.

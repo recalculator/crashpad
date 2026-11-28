@@ -20,7 +20,9 @@ describe("packaged CLI", () => {
     const files: string[] = packed.files.map((f: { path: string }) => f.path);
     expect(files).toContain("dist/cli.js");
     expect(files).toContain("bin/crashpad.js");
-    expect(files.some((f) => f.startsWith("src/") || f.startsWith("test/") || f.includes(".env"))).toBe(false);
+    // The deployment package ships with it.
+    for (const f of ["deploy/install.sh", "deploy/crashpad.service", "deploy/crashpad-backup.timer", "deploy/backup.sh", "deploy/healthcheck.sh", "deploy/Caddyfile", "deploy/README.md"]) expect(files).toContain(f);
+    expect(files.some((f) => f.startsWith("src/") || f.startsWith("test/") || /(^|\/)\.env(\.|$)/.test(f) || /\.pem$/.test(f))).toBe(false);
 
     const app = tempDir("crashpad-install-");
     expect(path.relative(ROOT, app).startsWith("..")).toBe(true);
@@ -28,6 +30,16 @@ describe("packaged CLI", () => {
     execFileSync("npm", ["install", "--no-audit", "--no-fund", "--prefer-offline", path.join(out, packed.filename)], { cwd: app, stdio: "ignore" });
     const bin = path.join(app, "node_modules", ".bin", "crashpad");
     expect(execFileSync(bin, ["--version"], { encoding: "utf8" }).trim()).toBe(VERSION);
+    // The installed service validates its configuration and refuses to start without one.
+    const svc = (() => {
+      try {
+        return { code: 0, out: execFileSync(bin, ["service", "check"], { encoding: "utf8", env: { PATH: process.env.PATH!, HOME: tempDir() } }) };
+      } catch (err) {
+        return { code: (err as { status: number }).status, out: String((err as { stdout: string }).stdout) };
+      }
+    })();
+    expect(svc.code).toBe(2);
+    expect(svc.out).toMatch(/CRASHPAD_GITHUB_APP_ID is not set[\s\S]*the service will not start/);
 
     const s = loadScenarios(NOTES_SCENARIOS).find((x) => x.name === "n05-permission-regression")!;
     const repo = buildScenarioRepo(s, tempDir(), NOTES_API);

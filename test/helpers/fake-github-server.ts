@@ -33,6 +33,9 @@ export class FakeGitHubServer {
   readonly appId = "424242";
   readonly clientId = "Iv1.fakeclient";
   readonly slug = "crashpad-test";
+  /** One-time codes accepted by the manifest conversion endpoint, and the key it returns. */
+  manifestCodes = new Set<string>();
+  manifestPem = "";
   private publicKey: string;
   private server: http.Server | null = null;
   url = "";
@@ -72,6 +75,12 @@ export class FakeGitHubServer {
     this.requests.push(`${req.method} ${p}`);
     let m: RegExpMatchArray | null;
 
+    // App manifest registration: a one-time code becomes the App's credentials.
+    if (req.method === "POST" && (m = p.match(/^\/app-manifests\/([^/]+)\/conversions$/))) {
+      if (!this.manifestCodes.has(m[1]!)) return [404, { message: "Not Found" }];
+      this.manifestCodes.delete(m[1]!);
+      return [201, { id: Number(this.appId), slug: this.slug, client_id: this.clientId, client_secret: "fake-secret", webhook_secret: "fake-webhook-secret-0123456789abcdef0123", pem: this.manifestPem, html_url: `https://github.com/apps/${this.slug}` }];
+    }
     if (req.method === "GET" && p === "/app") return this.verifyJwt(auth) ? [200, { slug: this.slug, client_id: this.clientId }] : [401, { message: "Bad credentials" }];
     if (req.method === "POST" && (m = p.match(/^\/app\/installations\/(\d+)\/access_tokens$/))) {
       if (!this.verifyJwt(auth)) return [401, { message: "A JSON web token could not be decoded" }];

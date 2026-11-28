@@ -6,7 +6,7 @@ import { projectFromDatabaseConfig } from "../config.ts";
 import { PgServer } from "../db/postgres.ts";
 import { FsSource, GitSource } from "../source.ts";
 import type { ConfigLayer, SuiteConfig } from "../suite/config.ts";
-import { runSuite, type Discoverer } from "../suite/runner.ts";
+import { runSuite, type Discoverer, type StoredHttp } from "../suite/runner.ts";
 import { ACTIONABLE } from "../report/types.ts";
 import type { SuiteReport } from "../suite/types.ts";
 import { TERMINAL, type Agent, type AgentRun } from "./agent.ts";
@@ -35,6 +35,8 @@ export interface RepairOptions {
   candidate: { label: string; commit: string };
   databaseUrl: string;
   settings?: ConfigLayer;
+  /** Scenarios from Crashpad's storage, loaded once: every verification uses this same copy. */
+  storedHttp?: StoredHttp;
   discover: Discoverer | false;
   agent: Agent | null;
   maxAttempts: number;
@@ -121,6 +123,7 @@ export async function repair(o: RepairOptions): Promise<RepairResult> {
       expectations: origSource,
       databaseUrl: o.databaseUrl,
       ...(o.settings ? { settings: o.settings } : {}),
+      ...(o.storedHttp ? { storedHttp: o.storedHttp } : {}),
       discover: o.discover,
       deadlineMs: Math.max(60_000, deadline - Date.now()),
       ...(o.signal ? { signal: o.signal } : {}),
@@ -246,9 +249,18 @@ export async function repair(o: RepairOptions): Promise<RepairResult> {
       const changes = await ws.changes();
       record.changedFiles = changes.map((c) => c.path);
       const bad = await violations(ws, guard);
+      // Scenarios kept in Crashpad's storage live outside the workspace; they are expectations too.
+      if (o.storedHttp) {
+        const now = await fs.readFile(o.storedHttp.path, "utf8").catch(() => null);
+        if (now !== o.storedHttp.raw) {
+          await fs.writeFile(o.storedHttp.path, o.storedHttp.raw, { mode: 0o600 });
+          bad.push({ path: o.storedHttp.path, reason: "runtime scenarios in Crashpad's storage are expectations and cannot be changed by a repair (restored)" });
+          log(`restored ${o.storedHttp.path}, which the agent changed`);
+        }
+      }
       record.violations = bad;
       if (bad.length) {
-        await ws.restore(bad.map((v) => v.path));
+        await ws.restore(bad.filter((v) => !path.isAbsolute(v.path)).map((v) => v.path));
         log(`rejected protected edits: ${bad.map((v) => v.path).join(", ")}`);
       }
       const remainingChanges = (await ws.changes()).length;

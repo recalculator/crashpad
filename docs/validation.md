@@ -168,6 +168,46 @@ No settings were needed, and nothing was written to the repository.
 - **Startup** only proves `next start` opens its port. No page or route was requested.
 - **Typecheck and test commands.** There are none, so only `next build` ran. `next build` runs TypeScript, but Crashpad does not count that as a separate typecheck.
 
+## Release 0.3.0 preparation (2026-11-27)
+
+**Stored scenarios** (`test/integration/stored-scenarios.test.ts`, real notes-api app and PostgreSQL). The repository under test has no `crashpad.http.json` on either version.
+
+- **No stored scenarios:** permissions are "not configured".
+- **After `crashpad scenarios --import`:** the permission regression is caught. Coverage says the scenarios came from Crashpad's storage, and the file is mode 600.
+- **Precedence:** a repository's own `crashpad.http.json` wins, and the report says the stored ones were ignored.
+- **Invalid files** are rejected on import.
+- **Repairs cannot change them.** A mock agent that edits the stored file during a repair is recorded as a violation, the file is restored, and verification uses the copy loaded before the repair.
+
+**Service deployment** (`test/integration/service-deploy.test.ts`; **GitHub is faked**):
+
+- **`crashpad service check`:**
+  - names each missing setting;
+  - rejects a non-numeric App ID, an invalid slug, a non-RSA key, and a relative state path;
+  - warns about a short webhook secret, a world-readable key, and state in `/tmp`.
+- **`--online`:** confirms matching credentials, and catches a wrong slug and a key from another App.
+- **Startup:** `crashpad service` exits 2 with an invalid configuration.
+- **Manifest:** it requests exactly the permissions and events the service uses, and requires HTTPS.
+- **`crashpad service register`:**
+  - the local page posts to `/settings/apps/new`, and the callback rejects a wrong `state`;
+  - the code exchange writes the key and `service.env` with mode 600;
+  - it refuses to overwrite, and rejects used or expired codes.
+- **`/healthz`** reports the version and storage. State persists across a restart.
+- **`deploy/backup.sh`:** dated copies, pruning, refusal of corrupt state, and no leftover temporary files.
+- **`deploy/healthcheck.sh`** passes against a running service.
+
+**Installed-package rehearsal** (outside the checkout, manual). `npm pack` built `crashpad-0.3.0.tgz`; it contains `deploy/` with executable scripts. It was installed into an empty directory, then:
+
+- `crashpad --version` printed 0.3.0;
+- `service check` with nothing set listed all six settings (exit 2), and with throwaway credentials it passed, warning that the scratch directory may be cleared on reboot;
+- the installed `crashpad service` ran, and the shipped `healthcheck.sh` passed all four checks;
+- a signed `installation` webhook returned 200, the state file was mode 600, and the installation was still in the state after a restart;
+- the shipped `backup.sh` kept one dated copy, mode 600.
+
+**Not run:**
+
+- `install.sh`, the systemd units, and the Caddyfile on a Linux host (none was provisioned; `systemd-analyze` and `caddy` are not available here);
+- anything against github.com.
+
 ## Packaged CLI (automated: `test/integration/package.test.ts`)
 
 The test does the following:
@@ -347,7 +387,8 @@ The action's PR-comment step has not yet run on a pull request. PR #1's comment 
 ## Not validated
 
 - **Real-project use is limited to two trials** (Willo and autofounder; see above). On real projects, the configuration/startup area and Drizzle schema compatibility ran. Migration-based database checks, API contracts, permissions, and workflows have run only on fixtures.
-- **The GitHub App flow has not run against github.com** (see above).
+- **The GitHub App flow has not run against github.com** (see above). This includes App registration from the manifest, `crashpad service check --online`, real webhooks, device-flow pairing, check runs, and fix PRs. The [acceptance test](acceptance.md) is the plan for verifying them.
+- **The deployment package on a real host:** `install.sh`, the systemd units, the backup timer, and the Caddyfile.
 - A real fork PR with a read-only token: covered only with fakes.
 - The composite `action.yml` from another repository, and its PR-comment step on a live pull request.
 - PostgreSQL other than 16, Windows, very large schemas or repositories, and package managers other than npm in runtime checks. The pnpm and Yarn commands are discovered, but only npm installs were executed in tests.

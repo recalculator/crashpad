@@ -5,6 +5,7 @@ import { GitHubHttpError } from "../github/client.ts";
 import { asUser, GitHubApp } from "./github-app.ts";
 import { DEFAULT_REPAIR_POLICY, evaluatePullRequest, FIX_BRANCH_PREFIX, mayStartRepair, WRITE_PERMISSIONS, type RepairPolicy } from "./policy.ts";
 import { isActive, ServiceStore, type Companion, type Installation, type Job } from "./store.ts";
+import { VERSION } from "../version.ts";
 
 /**
  * The Crashpad GitHub App service. It is the always-on half of the account-wide
@@ -511,7 +512,11 @@ export class CrashpadService {
   async route(req: http.IncomingMessage): Promise<{ status: number; body: unknown }> {
     const url = new URL(req.url ?? "/", "http://service");
     const p = url.pathname;
-    if (req.method === "GET" && p === "/healthz") return { status: 200, body: { ok: true } };
+    if (req.method === "GET" && p === "/healthz") {
+      // Healthy = configured and able to persist state. No secrets or repository names.
+      const storage = this.store.writable();
+      return { status: storage ? 200 : 503, body: { ok: storage, version: VERSION, storage: storage ? "ok" : "not writable", companionsOnline: this.store.companions().filter((c) => !c.revoked && c.lastSeen && Date.now() - Date.parse(c.lastSeen) < this.cfg.onlineWindowMs).length } };
+    }
     if (req.method === "GET" && p === "/api/app") return { status: 200, body: { appId: this.cfg.appId, clientId: this.cfg.clientId ?? null, slug: this.cfg.appSlug ?? null, installUrl: this.cfg.appSlug ? `${this.cfg.webUrl}/apps/${this.cfg.appSlug}/installations/new` : null } };
     if (req.method === "POST" && p === "/github/webhook") {
       const raw = await readBody(req);

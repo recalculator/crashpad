@@ -9,6 +9,7 @@ import { gitOut } from "../git.ts";
  * Generated onboarding settings live here, not in the repositories:
  *
  *   repos/<repo-key>/settings.json     user-provided overrides (a config layer)
+ *   repos/<repo-key>/crashpad.http.json  runtime scenarios kept outside the repository (optional)
  *   repos/<repo-key>/discovery/<tree>.json  cached discovery for one Git tree
  *
  * A discovery cache entry is only reused for the identical Git tree, the same
@@ -79,6 +80,11 @@ export async function loadSettings(key: string): Promise<RepoSettings | null> {
 
 export async function saveSettings(key: string, s: RepoSettings): Promise<void> {
   await writeJsonAtomic(path.join(repoDir(key), "settings.json"), s);
+}
+
+/** Where a repository's externally stored runtime scenarios live (same format as crashpad.http.json). */
+export function storedScenariosPath(key: string): string {
+  return path.join(repoDir(key), "crashpad.http.json");
 }
 
 export interface CachedDiscovery<T> {

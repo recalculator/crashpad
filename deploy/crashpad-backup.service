@@ -1,0 +1,13 @@
+# Daily copy of the service state (see deploy/backup.sh). Triggered by crashpad-backup.timer.
+[Unit]
+Description=Back up the Crashpad service state
+
+[Service]
+Type=oneshot
+User=crashpad
+Group=crashpad
+Environment=CRASHPAD_SERVICE_DATA=/var/lib/crashpad/state.json
+Environment=CRASHPAD_BACKUP_DIR=/var/lib/crashpad/backups
+Environment=CRASHPAD_BACKUP_KEEP=14
+ExecStart=/usr/local/lib/crashpad/backup.sh
+UMask=0077

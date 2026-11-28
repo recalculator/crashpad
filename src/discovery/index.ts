@@ -4,7 +4,11 @@ import type { Discoverer, Discovery } from "../suite/runner.ts";
 import type { ConfigLayer } from "../suite/config.ts";
 import { VERSION } from "../version.ts";
 import { discoverNode, DISCOVERY_RULES_VERSION } from "./node.ts";
-import { loadSettings, readDiscoveryCache, repoIdentity, writeDiscoveryCache } from "./store.ts";
+import fs from "node:fs/promises";
+import { ConfigError, formatConfigError, parseJson } from "../config.ts";
+import { HttpManifestSchema } from "../engines/http.ts";
+import type { StoredHttp } from "../suite/runner.ts";
+import { loadSettings, readDiscoveryCache, repoIdentity, storedScenariosPath, writeDiscoveryCache } from "./store.ts";
 
 export { DISCOVERY_RULES_VERSION };
 
@@ -30,6 +34,33 @@ export function discoverer(opts: { cache?: boolean } = {}): Discoverer {
     if (tree && repoKey) await writeDiscoveryCache(repoKey, tree, DISCOVERY_RULES_VERSION, VERSION, result).catch(() => {});
     return result;
   };
+}
+
+/**
+ * Runtime scenarios stored in Crashpad's storage for this repository, validated, or null.
+ * Loaded ONCE per run and passed by value, so nothing (including a repair agent) can change
+ * the expectations while a run or repair is in progress.
+ */
+export async function storedScenarios(key: string): Promise<StoredHttp | null> {
+  const p = storedScenariosPath(key);
+  let raw: string;
+  try {
+    raw = await fs.readFile(p, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  const m = HttpManifestSchema.safeParse(parseJson(raw, p));
+  if (!m.success) throw new ConfigError(`${p}: ${formatConfigError(m.error)}`);
+  return { path: p, manifest: m.data, raw };
+}
+
+/** Settings layer and stored scenarios for a local repository. */
+export async function repoInputsFor(repoRoot: string): Promise<{ settings?: ConfigLayer; storedHttp?: StoredHttp }> {
+  const { key } = await repoIdentity(repoRoot);
+  const settings = await settingsFor(repoRoot);
+  const storedHttp = await storedScenarios(key);
+  return { ...(settings ? { settings } : {}), ...(storedHttp ? { storedHttp } : {}) };
 }
 
 /** Stored per-repository settings as a configuration layer, if any. */

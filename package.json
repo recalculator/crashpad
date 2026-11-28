@@ -1,6 +1,6 @@
 {
   "name": "crashpad",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Checks whether a backend change breaks database, API contract, configuration/startup, permission, or workflow behavior; repairs with independent verification and draft fix PRs.",
   "type": "module",
   "license": "MIT",
@@ -15,7 +15,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "docs/third-party.md"
+    "docs/third-party.md",
+    "deploy"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

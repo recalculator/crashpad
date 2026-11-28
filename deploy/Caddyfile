@@ -1,0 +1,20 @@
+# Caddy in front of the Crashpad service: automatic HTTPS, and only the service's own
+# paths are exposed. Replace crashpad.example.com with your host name (DNS must point here).
+crashpad.example.com {
+	@crashpad path /github/webhook /api/* /healthz
+	handle @crashpad {
+		request_body {
+			max_size 5MB
+		}
+		reverse_proxy 127.0.0.1:8787 {
+			# Companions long-poll for up to 25 s.
+			transport http {
+				read_timeout 90s
+				write_timeout 90s
+			}
+		}
+	}
+	handle {
+		respond 404
+	}
+}

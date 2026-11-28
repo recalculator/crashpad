@@ -6,7 +6,10 @@ import { databaseUrl, projectDirFor } from "../context.ts";
 import { loadCompanionConfig, ServiceClient } from "../companion/client.ts";
 import { PgServer, redactUrl } from "../db/postgres.ts";
 import { discoverer, DISCOVERY_RULES_VERSION } from "../discovery/index.ts";
-import { crashpadHome, keyFor, loadSettings, normalizeRemote, repoDir, repoIdentity, saveSettings, setPath } from "../discovery/store.ts";
+import { crashpadHome, keyFor, loadSettings, normalizeRemote, repoDir, repoIdentity, saveSettings, setPath, storedScenariosPath } from "../discovery/store.ts";
+import { storedScenarios } from "../discovery/index.ts";
+import { HttpManifestSchema } from "../engines/http.ts";
+import { ConfigError, formatConfigError, parseJson } from "../config.ts";
 import { git, gitOut, repoRoot } from "../git.ts";
 import { ClaudeCodeAgent } from "../repair/claude.ts";
 import { FsSource, GitSource, type Source } from "../source.ts";
@@ -30,7 +33,7 @@ export interface RepoOnboarding {
 }
 
 /** What discovery (plus stored settings and an optional repo file) gives each area. */
-export async function onboard(source: Source, projectDir: string, repo: string, commit: string | null, settings?: Record<string, unknown>): Promise<RepoOnboarding> {
+export async function onboard(source: Source, projectDir: string, repo: string, commit: string | null, settings?: Record<string, unknown>, stored?: { path: string; checks: number } | null): Promise<RepoOnboarding> {
   const d: Discovery = await discoverer({ cache: true })(source, projectDir);
   const file = await readConfigFileLayer(source, projectDir).catch(() => null);
   const layers = [d.layer, ...(settings ? [settings] : []), ...(file ? [file.layer] : [])];
@@ -43,7 +46,7 @@ export async function onboard(source: Source, projectDir: string, repo: string, 
     configError = (err as Error).message;
   }
   const has = (k: string) => k.split(".").reduce<unknown>((o, x) => (o && typeof o === "object" ? (o as Record<string, unknown>)[x] : undefined), raw) !== undefined;
-  const overridden = (k?: string) => !!k && layers.length > 1 && k.split(".").reduce<unknown>((o, x) => (o && typeof o === "object" ? (o as Record<string, unknown>)[x] : undefined), mergeLayers(...layers.slice(1))) !== undefined;
+  const overridden = (k?: string) => (k === "http.checks" && !!stored) || (!!k && layers.length > 1) && k.split(".").reduce<unknown>((o, x) => (o && typeof o === "object" ? (o as Record<string, unknown>)[x] : undefined), mergeLayers(...layers.slice(1))) !== undefined;
   const missingFor = (a: Area) => d.missing.filter((m) => m.area === a && !overridden(m.key)).map((m) => m.message);
   const areas = {} as RepoOnboarding["areas"];
   const status = (area: Area, ok: boolean, partialOk: boolean): Readiness => {
@@ -61,7 +64,9 @@ export async function onboard(source: Source, projectDir: string, repo: string, 
   };
   areas.api = { status: status("api", has("api.openapi") && has("app.start"), has("api.openapi")), found: d.facts.filter((f) => /OpenAPI/i.test(f)), missing: [...missingFor("api"), ...(has("api.openapi") && !has("app.start") ? ["runtime contract checks need an application start command (app.start)"] : [])] };
   areas.config = { status: status("config", has("app.start") && has("app.envSchema"), has("app.start")), found: d.facts.filter((f) => /start script|build script|environment (schema|declared)|readiness|package.json|lockfile|port variable|typecheck script|test script/i.test(f)), missing: missingFor("config") };
-  for (const a of ["permissions", "workflows"] as const) areas[a] = { status: status(a, has("http.checks") && has("app.start"), false), found: d.facts.filter((f) => /runtime check manifest/i.test(f)), missing: missingFor(a) };
+  const scenarios = has("http.checks") || !!stored;
+  const storedFact = stored ? [`${stored.checks} runtime scenario(s) stored in Crashpad's storage (${stored.path}), not in the repository`] : [];
+  for (const a of ["permissions", "workflows"] as const) areas[a] = { status: status(a, scenarios && has("app.start"), false), found: [...d.facts.filter((f) => /runtime check manifest/i.test(f)), ...storedFact], missing: missingFor(a) };
   const get = (k: string) => k.split(".").reduce<unknown>((o, x) => (o && typeof o === "object" ? (o as Record<string, unknown>)[x] : undefined), raw);
   const build = get("app.build") as string[] | undefined;
   const tests = (get("tests") as string[][] | undefined) ?? [];
@@ -97,7 +102,8 @@ export async function cmdDiscover(v: Values, cwd: string): Promise<number> {
   const projectDir = projectDirFor(root, cwd, v.project);
   const { id, key } = await repoIdentity(root);
   const settings = (await loadSettings(key))?.config;
-  const o = await onboard(new FsSource(root), projectDir, id, null, settings);
+  const st = await storedScenarios(key);
+  const o = await onboard(new FsSource(root), projectDir, id, null, settings, st ? { path: st.path, checks: st.manifest.checks.length } : null);
   process.stdout.write(v.format === "json" ? JSON.stringify(o, null, 2) + "\n" : renderOnboarding(o) + "\n");
   return o.configError ? 2 : 0;
 }
@@ -130,6 +136,48 @@ export async function cmdSettings(v: Values, cwd: string): Promise<number> {
     await saveSettings(key, current);
   }
   process.stdout.write(`${id} (${path.join(repoDir(key), "settings.json")})\n${JSON.stringify(current.config, null, 2)}\n`);
+  return 0;
+}
+
+/**
+ * Runtime scenarios kept in Crashpad's storage instead of the repository, for projects
+ * whose owners do not want a Crashpad file committed. Same format as crashpad.http.json.
+ */
+export async function cmdScenarios(v: Values, cwd: string): Promise<number> {
+  let id: string;
+  let key: string;
+  if (v.repo) {
+    id = `github.com/${v.repo.toLowerCase()}`;
+    key = keyFor(id);
+  } else ({ id, key } = await repoIdentity(await repoRoot(cwd)));
+  const dest = storedScenariosPath(key);
+  if (v.import && v.remove) throw new UsageError("use either --import or --remove");
+  if (v.import) {
+    const src = path.resolve(cwd, v.import);
+    const raw = await fs.readFile(src, "utf8");
+    const m = HttpManifestSchema.safeParse(parseJson(raw, src));
+    if (!m.success) throw new ConfigError(`${src}: ${formatConfigError(m.error)}`);
+    await fs.mkdir(path.dirname(dest), { recursive: true, mode: 0o700 });
+    // Scenarios can hold test credentials for test identities: owner-only.
+    const tmp = `${dest}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(m.data, null, 2) + "\n", { mode: 0o600 });
+    await fs.rename(tmp, dest);
+  } else if (v.remove) {
+    await fs.rm(dest, { force: true });
+    process.stdout.write(`${id}: stored scenarios removed\n`);
+    return 0;
+  }
+  const stored = await storedScenarios(key);
+  if (!stored) {
+    process.stdout.write(`${id}: no stored scenarios (${dest}). Import a crashpad.http.json-format file with: crashpad scenarios --import <file>\n`);
+    return 0;
+  }
+  const by = (a: string) => stored.manifest.checks.filter((c) => c.area === a).length;
+  process.stdout.write(
+    `${id}: ${stored.manifest.checks.length} scenario(s) stored in ${stored.path}\n` +
+      `  api ${by("api")}, permissions ${by("permissions")}, workflows ${by("workflows")}; identities: ${Object.keys(stored.manifest.identities).join(", ") || "none"}\n` +
+      "  Used when the repository has no crashpad.http.json. Not versioned with the code: the same expectations apply to the baseline and the candidate.\n",
+  );
   return 0;
 }
 
@@ -209,7 +257,11 @@ export async function cmdSetup(v: Values, cwd: string): Promise<number> {
   }
   out("\nRepositories (Node.js / TypeScript / PostgreSQL discovery):\n");
   for (const r of repos) {
-    const o = await onboard(r.source, r.projectDir, r.label, r.commit, r.settings);
+    const st = await storedScenarios(r.key).catch((err) => {
+      out(`  ✗ ${r.label}: stored scenarios are invalid: ${(err as Error).message}`);
+      return null;
+    });
+    const o = await onboard(r.source, r.projectDir, r.label, r.commit, r.settings, st ? { path: st.path, checks: st.manifest.checks.length } : null);
     await fs.mkdir(repoDir(r.key), { recursive: true });
     await fs.writeFile(path.join(repoDir(r.key), "onboarding.json"), JSON.stringify(o, null, 2) + "\n", { mode: 0o600 });
     out(renderOnboarding(o) + "\n");

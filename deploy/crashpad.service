@@ -1,0 +1,29 @@
+# Crashpad GitHub App service (one process; state on persistent storage).
+# Installed by deploy/install.sh to /etc/systemd/system/crashpad.service.
+[Unit]
+Description=Crashpad GitHub App service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=crashpad
+Group=crashpad
+EnvironmentFile=/etc/crashpad/service.env
+# Refuse to start with an invalid configuration (same checks as `crashpad service check`).
+ExecStartPre=/usr/bin/env crashpad service check
+ExecStart=/usr/bin/env crashpad service --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+# /var/lib/crashpad, owned by the service user; CRASHPAD_SERVICE_DATA points inside it.
+StateDirectory=crashpad
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/crashpad
+
+[Install]
+WantedBy=multi-user.target

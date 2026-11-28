@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { UsageError, writeReport, type Values } from "../cli.ts";
 import { databaseUrl, projectDirFor } from "../context.ts";
-import { discoverer, settingsFor } from "../discovery/index.ts";
+import { discoverer, repoInputsFor } from "../discovery/index.ts";
 import { git, gitOut, parseGitHubRemote, repoRoot, resolveCommit } from "../git.ts";
 import { FetchGitHubApi, parseRepo, resolveToken } from "../github/client.ts";
 import { publishFiles } from "../github/publish.ts";
@@ -89,7 +89,7 @@ export async function cmdRepair(v: Values, cwd: string, agentOverride?: Agent): 
   process.once("SIGTERM", onSignal);
   let result: RepairResult;
   try {
-    const settings = await settingsFor(root);
+    const { settings, storedHttp } = await repoInputsFor(root);
     result = await repair({
       repoRoot: root,
       projectDir,
@@ -97,6 +97,7 @@ export async function cmdRepair(v: Values, cwd: string, agentOverride?: Agent): 
       candidate: { label, commit },
       databaseUrl: databaseUrl(v["database-url"]),
       ...(settings ? { settings } : {}),
+      ...(storedHttp ? { storedHttp } : {}),
       discover: v["no-discovery"] ? false : discoverer(),
       agent,
       maxAttempts: num(v["max-attempts"], 3, "max-attempts"),

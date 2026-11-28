@@ -61,16 +61,24 @@ Requirements:
 - For database checks, a **PostgreSQL 13+** server where Crashpad may `CREATE DATABASE`. Development uses PostgreSQL 16. Crashpad only creates and drops `crashpad_*` databases; never point it at production.
 - Claude Code is **optional**. It is needed only for Claude repairs.
 
-Crashpad is not published to a package registry. Build the package archive and install it once:
+Crashpad is **not published to npm**. Install it from the package archive.
+
+**From a GitHub release** (once a release is published; v0.3.0 is still a draft), download `crashpad-0.3.0.tgz` from the release page, then:
+
+```sh
+npm install -g ./crashpad-0.3.0.tgz
+crashpad --version                    # 0.3.0
+```
+
+**From source:**
 
 ```sh
 git clone https://github.com/recalculator/crashpad.git && cd crashpad
-npm ci && npm pack                    # → crashpad-0.2.0.tgz (runs the build)
-npm install -g ./crashpad-0.2.0.tgz   # or add it to one project: npm i -D /path/to/crashpad-0.2.0.tgz
-crashpad --version
+npm ci && npm pack                    # → crashpad-0.3.0.tgz (runs the build)
+npm install -g ./crashpad-0.3.0.tgz   # or add it to one project: npm i -D /path/to/crashpad-0.3.0.tgz
 ```
 
-Installing from this archive into an empty directory outside the source checkout is covered by an automated test. A Git dependency also works: `npm install -D github:recalculator/crashpad#<commit>`.
+Installing from this archive into an empty directory outside the source checkout is covered by an automated test. The archive also contains the service's deployment package (`deploy/`). A Git dependency also works: `npm install -D github:recalculator/crashpad#<commit>`.
 
 ## Running checks
 
@@ -164,6 +172,19 @@ crashpad settings --set 'app.start=["node","dist/server.js"]'
 crashpad settings --set app.env.STRIPE_API_KEY=sk_test_placeholder     # a TEST value, never production
 crashpad settings --repo acme/api --set app.readiness.path=/livez
 ```
+
+**Runtime scenarios outside the repository.** If you do not want a Crashpad file in a repository, keep its scenarios (the `crashpad.http.json` format below) in Crashpad's storage instead:
+
+```sh
+crashpad scenarios --import ~/crashpad-scenarios/my-app.json      # inside the repository; or --repo owner/name
+crashpad scenarios                                               # what is stored
+crashpad scenarios --remove
+```
+
+- They are validated on import and stored with mode 600, because they may hold test identities' passwords.
+- They are used only when the repository has no `crashpad.http.json`. The report's coverage says where they came from.
+- They are not versioned with the code, so **the same expectations apply to the baseline and the candidate**.
+- During a repair they are loaded once. A repair that changes the stored file is rejected and the file is restored.
 
 **A repository file** (`crashpad.config.json`, version 2) uses the same keys. The existing version-1 database-only format still works.
 
@@ -305,7 +326,12 @@ How runs behave:
 - **Loop prevention.** Crashpad's own fix PRs are checked but never repaired. Repairs are limited to one per commit and a small number per PR.
 - **Offline.** While your companion is offline, checks stay **pending** with a message saying so and when it was last seen. Nothing is reported as checked, and repairs do not happen while your computer is off.
 
-**Live setup has not been done yet.** Registering the App, hosting the service at a public URL, and enabling device flow need your participation. The exact steps are in [docs/github-app.md](docs/github-app.md).
+**Live setup has not been done yet.** Registering the App, hosting the service at a public URL, and enabling device flow need your participation.
+
+- **Deployment package:** [`deploy/`](deploy/README.md). It contains a systemd unit, a backup timer, a Caddyfile, an installer, and a health check.
+- **Registration:** `crashpad service register --url https://<host>` registers the App from its manifest and saves its credentials locally.
+- **Configuration check:** `crashpad service check [--online]` validates the configuration.
+- **Account steps and the acceptance test:** [docs/github-app.md](docs/github-app.md) and [docs/acceptance.md](docs/acceptance.md).
 
 ### Alternative: GitHub Actions
 
@@ -351,6 +377,8 @@ The composite action ([`action.yml`](action.yml)) runs `crashpad check` in a wor
 | Deterministic repair | Real checks and verification | — |
 | **Claude Code repair** | **Live on this machine:** Claude Code 2.1.332 with a Pro subscription sign-in repaired a permission regression in 1 attempt (7 turns), verified by Crashpad with all 22 checks and the app tests passing | Rejection of incorrect patches, "success without a fix", guardrail violations, expired sign-in, usage exhaustion, limits, and cancellation use a **mock Claude CLI** |
 | GitHub App service and companion | Real service, companion, Git, PostgreSQL, and app processes | **GitHub's API and device flow are faked**, including the Git Data API on a real bare repository. **Not yet run against github.com** |
+| Service deployment package | `crashpad service check`, `register` (manifest code exchange), `/healthz`, state persistence, `backup.sh`, and `healthcheck.sh` run in tests against a real service process | GitHub is faked. **The systemd units, `install.sh`, and the Caddyfile have not run on a real host** |
+| Stored scenarios | Real notes-api app: a permission regression is caught with no Crashpad file in the repository; a repair cannot change the stored expectations | The repair agent is the mock CLI |
 | GitHub Actions integration | Live in this repository: check, summary, artifact, comment, and Actions-opened draft PR (earlier versions) | — |
 
 Details, dates, and run links: [docs/validation.md](docs/validation.md).
@@ -371,6 +399,7 @@ npm run typecheck && npm test
 | `src/discovery/` | Node/PostgreSQL discovery rules and Crashpad's storage |
 | `src/repair/` | Repair loop, guardrails, workspace, Claude Code adapter |
 | `src/service/`, `src/companion/` | GitHub App service and local companion |
+| `deploy/` | Service deployment package (installer, systemd units, backup, Caddyfile, health check) |
 | `test/fixtures/` | `notes-api` (runtime fixture, no Crashpad config), `storefront` (database fixture), `drizzle-app` (Drizzle push project), scenarios, mock Claude CLI |
 
 MIT licensed. Reused open-source components and their licenses: [docs/third-party.md](docs/third-party.md).
