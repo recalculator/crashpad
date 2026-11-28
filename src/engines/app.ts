@@ -46,6 +46,8 @@ export interface CommandResult {
   cancelled: boolean;
   durationMs: number;
   output: string;
+  /** Standard output alone, when requested with `captureStdout` (capped at 16 MB). */
+  stdout?: string;
 }
 
 const TAIL_BYTES = 8000;
@@ -65,10 +67,11 @@ function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 /** Run a command (argv, never a shell) to completion with a deadline. */
-export function runCommand(argv: string[], opts: { cwd: string; env: Record<string, string>; timeoutMs: number; signal?: AbortSignal }): Promise<CommandResult> {
+export function runCommand(argv: string[], opts: { cwd: string; env: Record<string, string>; timeoutMs: number; signal?: AbortSignal; captureStdout?: boolean }): Promise<CommandResult> {
   const started = Date.now();
   return new Promise((resolve) => {
     let output = "";
+    let stdout = "";
     let timedOut = false;
     let cancelled = false;
     let child: ChildProcess;
@@ -82,6 +85,9 @@ export function runCommand(argv: string[], opts: { cwd: string; env: Record<stri
       output = tail(output + d.toString("utf8"));
     };
     child.stdout?.on("data", onData);
+    if (opts.captureStdout) child.stdout?.on("data", (d: Buffer) => {
+      if (stdout.length < 16 * 1024 * 1024) stdout += d.toString("utf8");
+    });
     child.stderr?.on("data", onData);
     const timer = setTimeout(() => {
       timedOut = true;
@@ -100,7 +106,7 @@ export function runCommand(argv: string[], opts: { cwd: string; env: Record<stri
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
-      resolve({ ok: code === 0 && !timedOut && !cancelled, code, signal, timedOut, cancelled, durationMs: Date.now() - started, output: redactText(output, opts.env) });
+      resolve({ ok: code === 0 && !timedOut && !cancelled, code, signal, timedOut, cancelled, durationMs: Date.now() - started, output: redactText(output, opts.env), ...(opts.captureStdout ? { stdout } : {}) });
     });
   });
 }

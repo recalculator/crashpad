@@ -70,6 +70,104 @@ Commands: `crashpad setup --repo-dir ~/Projects/Willo --repo-dir ~/Projects/auto
 
 On a project like Willo, today's real coverage is the environment contract plus startup and readiness, and the report says so.
 
+## Second real-project trial: autofounder (2026-11-27)
+
+**Project.** `~/Projects/autofounder`, the owner's Next.js 16 + Drizzle ORM + PostgreSQL app. Its schema is `src/db/schema.ts` (9 tables, 7 enums), applied with `drizzle-kit push`. It has **no committed migrations, no OpenAPI document, and no test or typecheck script**.
+
+**How it was run.**
+
+- An `npm pack` archive was installed in an empty directory outside the Crashpad checkout, with a fresh `CRASHPAD_HOME`, against fresh disposable clones of the original checkout.
+- No Crashpad file was added to the project.
+- The original checkout was never modified: still clean at `c37b0ba`, no stash, nothing pushed.
+- Regressions and repairs happened only in clones under the session scratchpad.
+
+### Round 1: package built from `12504d1`
+
+| Step | Result |
+|---|---|
+| `crashpad setup --repo-dir <clone>` | Correct facts. Database "needs input": `drizzle.config.ts` but no migrations. The repository was labelled with the original checkout's path, lowercased, not the clone that was analyzed. |
+| `crashpad check --base HEAD` (unchanged) | **Exit 2. Nothing useful verified.** `next build` ran with an empty environment and failed on both versions (`DATABASE_URL is not set`, thrown at import time while collecting page data). Startup was therefore inconclusive, and the multi-line build log was pasted into the coverage table. |
+
+Defects:
+
+1. Builds ran without the test environment or a database.
+2. The project's own build result was folded into the startup check instead of reported on its own.
+3. There was no database coverage at all for `drizzle-kit push` projects.
+4. The committed example `DATABASE_URL` (a placeholder Supabase URL) was eligible as a test value.
+5. Coverage cells contained raw command output.
+6. Setup showed the wrong directory.
+
+### Fixes
+
+- **Shared code trees.** Each version is exported and installed once.
+- **Builds** get the sanitized test environment plus a clone of that version's throwaway database. If that database cannot be built, the build is not run and the build result is "not decided"; it is never blamed on the change.
+- **Project commands** (`build`, `typecheck`, `test`) run on both versions and are reported in their own section and JSON field (`projectCommands`). A command the change broke exits 1, and the headline names it. Repair verification now uses these baseline-relative results instead of running the tests separately.
+- **Database URL.** The database URL's example value is never used.
+- **Drizzle schema compatibility.** Discovery reads the schema path from `drizzle.config.*` without executing it, and the new engine (`src/engines/drizzle.ts`) compares the two versions. It is labelled as schema compatibility, not migrations, everywhere.
+- **Stand-in parent rows.** When a parent table's rows are rejected, its children are still tested against stand-in parent rows. This was added after the first regression run reported 8 child tables as "blocked".
+- **Smaller fixes:**
+  - coverage cells show one line per item;
+  - the headline says which areas the passes come from;
+  - `next start` is known to read `PORT`;
+  - setup shows the analyzed directory and the raw origin.
+
+Regression coverage:
+
+- `test/integration/schema-compat.test.ts`, using the `drizzle-app` fixture and the real `drizzle-kit`, covering:
+  - unchanged schema, new NOT NULL column, removed enum value plus dropped column, type change, compatible additions, and a schema module that does not export;
+  - a broken build;
+  - setup output.
+- Unit tests in `test/unit/suite-rules.test.ts`:
+  - the Drizzle config shapes: path, glob, array, directory, missing `drizzle-kit`, MySQL;
+  - the example database URL never being used;
+  - command classification;
+  - `next start`.
+
+### Round 2: fresh package, `CRASHPAD_HOME`, and clone, with no manual settings
+
+**Manual steps:**
+
+- `npm pack` and install;
+- clone the project;
+- `crashpad setup --repo-dir <clone>`;
+- `crashpad check --base <ref>`.
+
+No settings were needed, and nothing was written to the repository.
+
+**Discovery assumptions** (all printed by setup):
+
+- npm with `package-lock.json`, and `npm ci`;
+- the schema module comes from `drizzle.config.ts`;
+- `next start` reads `PORT`;
+- readiness means the port accepts connections, since no health endpoint is known;
+- the committed placeholder `ANTHROPIC_API_KEY=sk-ant-...` is used as a test value, while the example `DATABASE_URL` is not.
+
+| Step | Result |
+|---|---|
+| Unchanged (`--base HEAD`) | **Exit 0**: "All 19 check(s) passed (database schema compatibility 17, config/startup 2) (partial coverage)". Project command `next build` passed on both versions. |
+| Regression in a clone: `ownerEmail: text("owner_email").notNull()` added to `projects`, with `createProject` passing `"unknown"` so everything compiles | **Exit 1**, one regression: `database:schema:table:projects`, `not_null_violation (23502): null value in column "owner_email" of relation "projects" violates not-null constraint`. Evidence: the schema diff (`+ column owner_email text NOT NULL without a default`) and the two synthetic baseline rows. The other 8 tables and 7 enums passed. `next build` passed on both versions, reported as a project command. |
+| `crashpad repair --agent claude --max-attempts 2 --max-turns 25 --max-budget-usd 1 --model sonnet` (live Claude Code 2.1.332, Pro sign-in) | **VERIFIED in 1 attempt** (11 turns, est. $0.16, 88 s in total). The patch makes `owner_email` nullable and drops the `"unknown"` placeholder (`src/db/schema.ts`, `src/db/queries/projects.ts`). Verification: all 19 checks pass, and `next build` passes. |
+
+**Independent verification.** In a separate clone, the regression commit and then `repair.patch` were applied with `git am` / `git apply`. Then:
+
+- **Real `drizzle-kit push --force`.** On a disposable database holding a project row created under the baseline schema, pushing the **regression** schema **truncated `projects` (0 rows left)**: data loss that push's `--force` approves silently. Pushing the **patched** schema kept the row and added `owner_email` as nullable.
+- **Build, `tsc --noEmit`, and `eslint`** all pass on the baseline, the regression, and the patch. The project's own checks cannot see this regression; only the schema-compatibility check caught it.
+- **Installed `crashpad check --base c37b0ba`** on the patched clone, with fresh storage: exit 0.
+
+**Database coverage actually achieved.** Schema compatibility for all 9 tables and 7 enums, plus a real database for the startup check.
+
+**Not covered:**
+
+- no migration sequence, and the statements push would run were not generated by Crashpad;
+- synthetic rows only;
+- the application's queries were not exercised.
+
+### Not exercised on autofounder
+
+- **API, permissions, workflows.** There is no OpenAPI document and no `crashpad.http.json`, so these were not configured.
+- **Startup** only proves `next start` opens its port. No page or route was requested.
+- **Typecheck and test commands.** There are none, so only `next build` ran. `next build` runs TypeScript, but Crashpad does not count that as a separate typecheck.
+
 ## Packaged CLI (automated: `test/integration/package.test.ts`)
 
 The test does the following:
@@ -248,7 +346,7 @@ The action's PR-comment step has not yet run on a pull request. PR #1's comment 
 
 ## Not validated
 
-- **Real-project use is limited to one trial** (Willo; see above). On a real project, only the configuration/startup area actually ran. The database, API, permission, and workflow areas have run only on fixtures.
+- **Real-project use is limited to two trials** (Willo and autofounder; see above). On real projects, the configuration/startup area and Drizzle schema compatibility ran. Migration-based database checks, API contracts, permissions, and workflows have run only on fixtures.
 - **The GitHub App flow has not run against github.com** (see above).
 - A real fork PR with a read-only token: covered only with fakes.
 - The composite `action.yml` from another repository, and its PR-comment step on a live pull request.

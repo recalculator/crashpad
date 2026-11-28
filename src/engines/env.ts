@@ -139,9 +139,17 @@ export function buildTestEnv(opts: {
   useExampleValues: boolean;
   explicit: Record<string, string>;
   generated: Record<string, string>;
+  /**
+   * Variables whose committed example value is never used. The database URL is one:
+   * an example points at someone's real (or placeholder) server, and the application
+   * must only ever get Crashpad's throwaway database.
+   */
+  neverFromExamples?: string[];
 }): { env: Record<string, string>; appKeys: string[] } {
   const app: Record<string, string> = {};
-  if (opts.schema && opts.useExampleValues) Object.assign(app, opts.schema.examples);
+  if (opts.schema && opts.useExampleValues) {
+    for (const [k, v] of Object.entries(opts.schema.examples)) if (!opts.neverFromExamples?.includes(k)) app[k] = v;
+  }
   Object.assign(app, opts.explicit, opts.generated);
   return { env: { ...baseProcessEnv(), ...app }, appKeys: Object.keys(app).sort() };
 }

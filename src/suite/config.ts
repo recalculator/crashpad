@@ -75,8 +75,25 @@ export const SuiteConfigSchema = z
     app: AppConfigSchema.optional(),
     /** Runtime checks: API behavior, permissions, and workflows (see crashpad.http.json). */
     http: z.object({ checks: relPath }).strict().optional(),
-    /** Commands that run the application's own tests during repair verification (argv, no shell). */
+    /**
+     * The project's own test and typecheck commands (argv, no shell). They run on both
+     * versions and are reported separately from Crashpad's checks; repair verification
+     * requires the ones that passed at the baseline to pass.
+     */
     tests: z.array(argv).optional(),
+    /**
+     * A schema defined in ORM code instead of SQL migrations. Used by the database area for
+     * schema compatibility testing when there are no committed migrations (`database`).
+     */
+    orm: z
+      .object({
+        kind: z.literal("drizzle"),
+        /** The Drizzle schema module (a single file), relative to the project. */
+        schema: relPath,
+        exportTimeoutMs: z.number().int().positive().max(600_000).default(120_000),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

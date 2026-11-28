@@ -10,7 +10,7 @@ import { runSuite, type Discoverer } from "../suite/runner.ts";
 import { ACTIONABLE } from "../report/types.ts";
 import type { SuiteReport } from "../suite/types.ts";
 import { TERMINAL, type Agent, type AgentRun } from "./agent.ts";
-import { runAppTests, type AppTestsResult } from "./app-tests.ts";
+import { commandsOk, testsFromReport, type AppTestsResult } from "./app-tests.ts";
 import { feedbackPrompt, initialPrompt } from "./prompt.ts";
 import { violations, Workspace, type Violation } from "./workspace.ts";
 import type { FileChange } from "../github/publish.ts";
@@ -132,23 +132,23 @@ export async function repair(o: RepairOptions): Promise<RepairResult> {
   const empty = { verification: null, attempts, proposer: null, files: [], patch: "", preexistingTestFailures: [] };
   if (orig.report.exitCode === 0) return { outcome: "not-needed", exitCode: 0, message: "All checks already pass; nothing to repair.", original: orig.report, ...empty };
   if (orig.report.problems.length) return { outcome: "cannot-repair", exitCode: 2, message: `The original run could not complete: ${orig.report.problems[0]!.message}`, original: orig.report, ...empty };
-  if (!orig.report.findings.some((f) => ACTIONABLE.has(f.classification))) {
+  if (!orig.report.findings.some((f) => ACTIONABLE.has(f.classification)) && !orig.report.projectCommands.results.some((c) => c.classification === "broken")) {
     return { outcome: "cannot-repair", exitCode: 2, message: `No actionable regression to repair: ${orig.report.headline}`, original: orig.report, ...empty };
   }
   const config = orig.candidateConfig as SuiteConfig;
   const guard = { repoRoot: o.repoRoot, commit: o.candidate.commit, projectDir: o.projectDir, config };
-  // Application tests that already fail at the BASELINE are not the change's fault and are not
-  // required. Tests the change itself broke must pass again for a repair to count.
-  const testsBefore = await runAppTests({ code: { root: o.repoRoot, commit: o.base.commit }, projectDir: o.projectDir, config, timeoutMs: 600_000, ...(o.signal ? { signal: o.signal } : {}) });
-  const preexisting = testsBefore.results.filter((r) => !r.ok).map((r) => r.command);
+  // The suite runs the project's own build and test commands on the BASELINE and the
+  // candidate. Commands already failing at the baseline are not the change's fault and are
+  // not required; commands the change broke must pass again for a repair to count.
+  const preexisting = orig.report.projectCommands.results.filter((c) => c.baseline.status === "fail").map((c) => c.command);
 
   const ws = await Workspace.create(o.repoRoot, o.candidate.commit);
   try {
     const verify = async (): Promise<{ report: SuiteReport; tests: AppTestsResult; ok: boolean }> => {
       log("verifying the proposed change independently");
       const v = await suite({ label: `${o.candidate.label} + proposed repair`, source: new FsSource(ws.dir, "repair workspace"), code: { root: ws.dir, commit: null } });
-      const tests = await runAppTests({ code: { root: ws.dir, commit: null }, projectDir: o.projectDir, config, timeoutMs: 600_000, ...(o.signal ? { signal: o.signal } : {}) });
-      const testsOk = !tests.problem && tests.results.every((r) => r.ok || preexisting.includes(r.command));
+      const tests = testsFromReport(v.report);
+      const testsOk = commandsOk(v.report);
       if (v.report.base.commit !== o.base.commit) throw new Error("internal: verification used a different baseline");
       return { report: v.report, tests, ok: verifiedAgainst(orig.report, v.report).ok && testsOk };
     };

@@ -1,15 +1,17 @@
 import { randomBytes } from "node:crypto";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { PgServer, type PgSession } from "../db/postgres.ts";
 import { errorText, runScript } from "../runner.ts";
 import type { AppConfig } from "../suite/config.ts";
 import type { Area, Evidence, Finding, SideResult } from "../suite/types.ts";
 import type { Classification } from "../report/types.ts";
-import { AppProcess, freePort, materialize, runCommand, tempWorkdir, type StartOutcome } from "./app.ts";
+import { AppProcess, freePort, runCommand, type CommandResult, type StartOutcome } from "./app.ts";
 import { buildTestEnv, redactValue, validateEnv, type EnvSchema, type EnvSchemaLoad } from "./env.ts";
 import { expandSteps, runScenario, type HttpCheck, type HttpManifest, type ScenarioRun } from "./http.ts";
 import { operations, type LoadedSpec } from "./openapi.ts";
+import { commandResult, commandSide } from "./project-commands.ts";
+import type { CodeTree, CodeTrees } from "./trees.ts";
+import type { ProjectCommandResult } from "../suite/types.ts";
 
 /**
  * Runtime checks run the application itself, once per version:
@@ -48,9 +50,15 @@ export interface RuntimeInput {
   signal?: AbortSignal;
   log?: (msg: string) => void;
   keep?: boolean;
+  /** Shared exported + installed code per version. */
+  trees: CodeTrees;
+  /** The project's own test/typecheck commands, run on both versions after the runtime checks. */
+  tests: string[][];
 }
 
 export interface RuntimeResult {
+  /** The project's own build and test commands (not Crashpad checks). */
+  commands: ProjectCommandResult[];
   findings: Finding[];
   ran: Partial<Record<Area, string[]>>;
   missing: Partial<Record<Area, string[]>>;
@@ -93,6 +101,7 @@ export function classifyRuntime(base: SideOutcome | null, cand: SideOutcome): { 
 
 interface PreparedSide {
   side: RuntimeSide;
+  tree: CodeTree;
   dir: string;
   appDir: string;
   template: string | null;
@@ -115,6 +124,8 @@ function startSummary(o: StartOutcome, readiness: AppConfig["readiness"]): strin
   }
 }
 
+const TEST_TIMEOUT_MS = 600_000;
+
 function lastLines(text: string, n = 40): string {
   return text.trimEnd().split("\n").slice(-n).join("\n");
 }
@@ -122,6 +133,7 @@ function lastLines(text: string, n = 40): string {
 export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
   const log = input.log ?? (() => {});
   const findings: Finding[] = [];
+  const commands: ProjectCommandResult[] = [];
   const ran: RuntimeResult["ran"] = {};
   const missing: RuntimeResult["missing"] = {};
   const unavailable: RuntimeResult["unavailable"] = {};
@@ -129,60 +141,66 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
   const cleanup: Array<() => Promise<void>> = [];
   const server = input.server;
 
-  const prepare = async (side: RuntimeSide, which: "baseline" | "candidate"): Promise<PreparedSide> => {
-    const dir = await tempWorkdir(`${which}`);
-    if (!input.keep) cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const appDir = path.join(dir, side.projectDir === "." ? "" : side.projectDir, side.app.root === "." ? "" : side.app.root);
-    const p: PreparedSide = { side, dir, appDir, template: null, ready: false };
+  /** Run `fn` with the URL of a fresh clone of this side's template database (dropped afterwards), or null without one. */
+  const withClone = async <T>(p: PreparedSide, prefix: string, fn: (url: string | null) => Promise<T>): Promise<T> => {
+    if (!p.template || !server) return fn(null);
+    const clone = PgServer.uniqueName(prefix);
+    await server.createDatabase(clone, p.template);
     try {
-      log(`${which}: exporting ${side.code.commit ? side.code.commit.slice(0, 12) : "working tree"}`);
-      await materialize(side.code.root, side.code.commit, dir);
-    } catch (err) {
-      p.problem = `could not export the ${which} code: ${(err as Error).message}`;
+      return await fn(server.appDatabaseUrl(clone));
+    } finally {
+      if (!input.keep) await server.dropDatabase(clone).catch(() => {});
+    }
+  };
+
+  const prepare = async (side: RuntimeSide, which: "baseline" | "candidate"): Promise<PreparedSide> => {
+    const tree = await input.trees.get(which, side.code, side.projectDir, side.app);
+    const p: PreparedSide = { side, tree, dir: tree.dir, appDir: tree.appDir, template: null, ready: false };
+    if (tree.problem) {
+      p.problem = tree.problem;
       return p;
     }
-    if (side.app.install) {
-      log(`${which}: ${side.app.install.join(" ")}`);
-      const r = await runCommand(side.app.install, { cwd: appDir, env: buildTestEnv({ schema: null, useExampleValues: false, explicit: {}, generated: {} }).env, timeoutMs: side.app.installTimeoutMs, ...(input.signal ? { signal: input.signal } : {}) });
-      if (!r.ok) {
-        p.problem = `dependency install failed for the ${which} (\`${side.app.install.join(" ")}\`${r.timedOut ? `, timed out after ${side.app.installTimeoutMs} ms` : `, exit ${r.code}`}):\n${lastLines(r.output, 20)}`;
-        return p;
-      }
-    }
-    if (side.app.build) {
-      log(`${which}: ${side.app.build.join(" ")}`);
-      const r = await runCommand(side.app.build, { cwd: appDir, env: buildTestEnv({ schema: null, useExampleValues: false, explicit: {}, generated: {} }).env, timeoutMs: side.app.installTimeoutMs, ...(input.signal ? { signal: input.signal } : {}) });
-      if (!r.ok) {
-        p.problem = `build failed for the ${which} (\`${side.app.build.join(" ")}\`, exit ${r.code}):\n${lastLines(r.output, 20)}`;
-        p.buildFailed = !r.timedOut && !r.cancelled;
-        return p;
-      }
-    }
+    // The database first, so the build gets a throwaway database URL like the app does
+    // (frameworks such as Next.js import server modules while building).
+    let dbProblem: string | undefined;
     if (side.dbScripts) {
-      if (side.dbUnavailable) {
-        p.problem = side.dbUnavailable;
-        return p;
-      }
-      if (!server) {
-        p.problem = "the project has a database but no PostgreSQL server is available";
-        return p;
-      }
-      const name = PgServer.uniqueName(which === "baseline" ? "rtb" : "rtc");
-      await server.createDatabase(name);
-      if (!input.keep) cleanup.push(() => server.dropDatabase(name).catch(() => {}));
-      const s = await server.connect(name);
-      try {
-        for (const sc of side.dbScripts) {
-          const r = await runScript(s, sc.sql, input.migrationTimeoutMs);
-          if (!r.ok) {
-            p.problem = `could not build the ${which} database: ${sc.path}: ${errorText(r.error)}`;
-            return p;
+      if (side.dbUnavailable) dbProblem = side.dbUnavailable;
+      else if (!server) dbProblem = "the project has a database but no PostgreSQL server is available";
+      else {
+        const name = PgServer.uniqueName(which === "baseline" ? "rtb" : "rtc");
+        await server.createDatabase(name);
+        if (!input.keep) cleanup.push(() => server.dropDatabase(name).catch(() => {}));
+        const s = await server.connect(name);
+        try {
+          for (const sc of side.dbScripts) {
+            const r = await runScript(s, sc.sql, input.migrationTimeoutMs);
+            if (!r.ok) {
+              dbProblem = `could not build the ${which} database: ${sc.path}: ${errorText(r.error)}`;
+              break;
+            }
           }
+        } finally {
+          await s.close();
         }
-      } finally {
-        await s.close();
+        if (!dbProblem) p.template = name;
       }
-      p.template = name;
+    }
+    // Without its database the build would fail for Crashpad's reason, not the change's.
+    if (dbProblem) {
+      p.problem = dbProblem;
+      return p;
+    }
+    if (side.app.build && !tree.build) {
+      log(`${which}: ${side.app.build.join(" ")}`);
+      tree.build = await withClone(p, "rtbuild", (url) =>
+        runCommand(side.app.build!, { cwd: p.appDir, env: sideEnv(side, { CI: "1", ...(url ? { [side.app.databaseUrlEnv]: url } : {}) }).env, timeoutMs: side.app.installTimeoutMs, ...(input.signal ? { signal: input.signal } : {}) }),
+      );
+    }
+    if (tree.build && !tree.build.ok) {
+      const r = tree.build;
+      p.problem = `build failed for the ${which} (\`${side.app.build!.join(" ")}\`${r.timedOut ? `, timed out after ${side.app.installTimeoutMs} ms` : `, exit ${r.code}`}; see "Project commands")`;
+      p.buildFailed = !r.timedOut && !r.cancelled;
+      return p;
     }
     p.ready = true;
     return p;
@@ -201,8 +219,7 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
       await server.createDatabase(clone, p.template);
       generated[app.databaseUrlEnv] = server.appDatabaseUrl(clone);
     }
-    const schema = p.side.envSchema?.ok ? p.side.envSchema.schema : null;
-    const { env, appKeys } = buildTestEnv({ schema, useExampleValues: app.useExampleValues, explicit: app.env, generated });
+    const { env, appKeys } = sideEnv(p.side, generated);
     const proc = new AppProcess({ command: app.start!, cwd: p.appDir, env, port });
     try {
       const start = await proc.start(app.readiness, input.signal);
@@ -399,16 +416,40 @@ export async function runRuntime(input: RuntimeInput): Promise<RuntimeResult> {
       if (!checks.some((c) => c.area === "workflows")) add(missing, "workflows", "no workflow scenarios in the HTTP manifest");
     }
     if (!checks.some((c) => c.area === "api")) add(missing, "api", input.contract ? "no runtime API checks: the contract has no parameterless public GET operations and none are configured" : "no runtime API checks configured and no OpenAPI contract to derive them from");
+
+    // ---- The project's own commands (reported separately from Crashpad's checks).
+    if (input.candidate.app.build) commands.push(commandResult(input.candidate.app.build, "build", commandSide(base.tree.build, base.problem ?? "not run"), commandSide(cand.tree.build, cand.problem ?? "not run")));
+    const testRuns = async (p: PreparedSide): Promise<Array<CommandResult | null>> => {
+      const out: Array<CommandResult | null> = [];
+      for (const t of input.tests) {
+        if (p.tree.problem) {
+          out.push(null);
+          continue;
+        }
+        log(`${p.tree.which}: ${t.join(" ")}`);
+        out.push(await withClone(p, "rttest", (url) => runCommand(t, { cwd: p.appDir, env: sideEnv(p.side, { CI: "1", ...(url ? { [p.side.app.databaseUrlEnv]: url } : {}) }).env, timeoutMs: TEST_TIMEOUT_MS, ...(input.signal ? { signal: input.signal } : {}) })));
+      }
+      return out;
+    };
+    const bt = await testRuns(base);
+    const ct = await testRuns(cand);
+    input.tests.forEach((t, i) => commands.push(commandResult(t, "test", commandSide(bt[i], base.tree.problem ?? "not run"), commandSide(ct[i], cand.tree.problem ?? "not run"))));
   } finally {
     for (const fn of cleanup.reverse()) await fn().catch(() => {});
   }
-  return { findings, ran, missing, unavailable };
+  return { commands, findings, ran, missing, unavailable };
+}
+
+/** The sanitized environment for one version's commands: committed examples (never the database URL), explicit test values, generated values. */
+export function sideEnv(side: Pick<RuntimeSide, "app" | "envSchema">, generated: Record<string, string>): { env: Record<string, string>; appKeys: string[] } {
+  const schema = side.envSchema?.ok ? side.envSchema.schema : null;
+  return buildTestEnv({ schema, useExampleValues: side.app.useExampleValues, explicit: side.app.env, generated, neverFromExamples: [side.app.databaseUrlEnv] });
 }
 
 function envFor(side: RuntimeSide, schema: EnvSchema): Record<string, string> {
   const generated: Record<string, string> = { [side.app.portEnv]: "0" };
   if (side.dbScripts) generated[side.app.databaseUrlEnv] = "postgres://crashpad-test-database";
-  const { env, appKeys } = buildTestEnv({ schema, useExampleValues: side.app.useExampleValues, explicit: side.app.env, generated });
+  const { env, appKeys } = buildTestEnv({ schema, useExampleValues: side.app.useExampleValues, explicit: side.app.env, generated, neverFromExamples: [side.app.databaseUrlEnv] });
   return Object.fromEntries(appKeys.map((k) => [k, env[k]!]));
 }
 

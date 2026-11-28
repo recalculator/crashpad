@@ -27,6 +27,14 @@ function describeFinding(f: Finding): string {
   return [`### ${f.id} (${AREA_TITLES[f.area]}, ${f.classification})`, `${f.title}${where ? ` — ${where}` : ""}`, f.message, `Baseline: ${f.baseline.summary}`, `Now: ${f.candidate.summary}`, ev ? `Evidence:\n${ev}` : ""].filter(Boolean).join("\n");
 }
 
+/** The project's own commands that the change broke (they passed at the baseline). */
+export function describeBrokenCommands(report: SuiteReport): string {
+  return report.projectCommands.results
+    .filter((c) => c.classification === "broken")
+    .map((c) => `### \`${c.command}\` (the project's ${c.role} command)\nPassed at the baseline; fails now (${c.candidate.summary}).${c.candidate.output ? `\nOutput (last lines):\n${clip(c.candidate.output, 2500).replace(/^/gm, "    ")}` : ""}`)
+    .join("\n\n");
+}
+
 export interface PromptContext {
   baseRef: string;
   baseCommit: string;
@@ -43,8 +51,8 @@ This directory is an isolated copy of the repository at commit ${c.commit}, the 
 
 ## Failing checks
 
-${describeFindings(c.report)}
-
+${describeFindings(c.report) || "None of Crashpad's own checks fail; see the project commands below."}
+${describeBrokenCommands(c.report) ? `\n## Project commands broken by this change\n\n${describeBrokenCommands(c.report)}\n` : ""}
 ## What to do
 
 1. Inspect the relevant application source and find the cause of each failure.

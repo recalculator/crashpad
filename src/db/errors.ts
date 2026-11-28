@@ -11,6 +11,7 @@ const PG_ERROR_NAMES: Record<string, string> = {
   "23514": "check_violation",
   "22P02": "invalid_text_representation",
   "22003": "numeric_value_out_of_range",
+  "22001": "string_data_right_truncation",
   "57014": "query_canceled",
   "25006": "read_only_sql_transaction",
   "08P01": "protocol_violation",

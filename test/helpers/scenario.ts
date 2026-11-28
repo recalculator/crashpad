@@ -9,6 +9,7 @@ export const SCENARIOS = path.join(FIXTURES, "scenarios");
 export const NOTES_API = path.join(FIXTURES, "notes-api");
 export const NOTES_SCENARIOS = path.join(FIXTURES, "notes-scenarios");
 export const OPTIONAL_ENV_APP = path.join(FIXTURES, "optional-env-app");
+export const DRIZZLE_APP = path.join(FIXTURES, "drizzle-app");
 
 export interface Scenario {
   name: string;

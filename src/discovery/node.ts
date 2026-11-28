@@ -12,7 +12,7 @@ import { parseDotenvExample } from "../engines/env.ts";
  * `missing` with the exact requirement.
  */
 
-export const DISCOVERY_RULES_VERSION = 1;
+export const DISCOVERY_RULES_VERSION = 2;
 
 export interface NodeFacts {
   packageManager: "npm" | "pnpm" | "yarn" | null;
@@ -46,6 +46,28 @@ async function firstExisting(source: Source, dir: string, candidates: string[]):
 
 function runScript(pm: NonNullable<NodeFacts["packageManager"]>, name: string): string[] {
   return pm === "npm" ? ["npm", "run", "--silent", name] : pm === "pnpm" ? ["pnpm", "run", name] : ["yarn", "run", name];
+}
+
+/**
+ * Read `schema` and `dialect` from a Drizzle config by inspection (it is never executed).
+ * Only a single string path to an existing file is used; arrays, globs, directories, and
+ * computed values are reported instead of guessed.
+ */
+export async function drizzleSchema(source: Source, dir: string, configFile: string): Promise<{ schema: string | null; dialect: string | null; why: string }> {
+  const text = (await source.readFile(projectPath(dir, configFile))) ?? "";
+  const dialect = text.match(/["']?dialect["']?\s*:\s*["']([a-z-]+)["']/)?.[1] ?? null;
+  const m = text.match(/["']?schema["']?\s*:\s*(["'])([^"'\n]+)\1\s*[,}\n]/);
+  if (!m) return { schema: null, dialect, why: /["']?schema["']?\s*:\s*\[/.test(text) ? "it is an array" : "no string literal found" };
+  const raw = m[2]!.trim();
+  if (/[*?{}]/.test(raw)) return { schema: null, dialect, why: `"${raw}" is a glob` };
+  let rel: string;
+  try {
+    rel = projectPath(".", raw.replace(/^\.\//, ""));
+  } catch {
+    return { schema: null, dialect, why: `"${raw}" is not a path inside the project` };
+  }
+  if ((await source.readFile(projectPath(dir, rel))) === null) return { schema: null, dialect, why: `"${raw}" is not a file (a directory of schema files is not supported)` };
+  return { schema: rel, dialect, why: "" };
 }
 
 export async function discoverNode(source: Source, dir: string): Promise<Discovery & { node: NodeFacts | null }> {
@@ -184,7 +206,15 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
   if (!database.migrations && !missing.some((m) => m.area === "database")) {
     const drizzleConfig = await firstExisting(source, dir, ["drizzle.config.ts", "drizzle.config.js", "drizzle.config.mjs", "drizzle.config.json"]);
     if (drizzleConfig) {
-      need("database", `${drizzleConfig} is present but no generated Drizzle migrations were found (drizzle/meta/_journal.json). A schema applied with \`drizzle-kit push\` has no migration history to check; generate migrations (\`drizzle-kit generate\`) or set database.migrations`, "database.migrations");
+      const d = await drizzleSchema(source, dir, drizzleConfig);
+      const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) } as Record<string, string>;
+      if (d.dialect && !/^postgres/.test(d.dialect)) need("database", `${drizzleConfig} uses dialect ${d.dialect}; only PostgreSQL is supported`);
+      else if (!d.schema) need("database", `${drizzleConfig} is present and there are no generated migrations, but its schema setting is not a single file path Crashpad can read (${d.why}); set orm.schema to the schema module for schema compatibility testing`, "orm.schema");
+      else if (!deps["drizzle-kit"]) need("database", `${drizzleConfig} names the schema ${d.schema}, but drizzle-kit is not a dependency, so the schema cannot be exported; add it as a devDependency for schema compatibility testing`, "orm.schema");
+      else {
+        layer.orm = { kind: "drizzle", schema: d.schema };
+        facts.push(`Drizzle ORM schema: ${d.schema} (from ${drizzleConfig}). There are no committed migrations, so the database area tests SCHEMA COMPATIBILITY between the two versions' schema definitions, not a migration sequence`);
+      }
     } else if (prismaSchema !== null && !prismaDirs.length) {
       need("database", "prisma/schema.prisma is present but there is no prisma/migrations directory (a `prisma db push` workflow has no migration history to check); set database.migrations if migrations live elsewhere", "database.migrations");
     } else if (node?.postgresClient) {
@@ -257,7 +287,7 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
     else if (jsonEnv) layer.app.envSchema = { path: jsonEnv, format: "json-schema" };
     const dbVar = DB_URL_NAMES.find((n) => envKeys.includes(n));
     if (dbVar && dbVar !== "DATABASE_URL") layer.app.databaseUrlEnv = dbVar;
-    if (database.migrations && !dbVar) need("config", "the environment schema does not name the database URL variable; Crashpad sets DATABASE_URL", "app.databaseUrlEnv");
+    if ((database.migrations || layer.orm) && !dbVar) need("config", "the environment schema does not name the database URL variable; Crashpad sets DATABASE_URL", "app.databaseUrlEnv");
     const health = specDoc ? HEALTH_PATHS.find((p) => specDoc?.paths?.[p]?.get) : undefined;
     if (health) {
       layer.app.readiness = { path: health };
@@ -268,7 +298,9 @@ export async function discoverNode(source: Source, dir: string): Promise<Discove
     // The port variable: PORT, or the one *_PORT variable the env example declares (commented defaults count).
     const ports = [...new Set(documentedKeys.filter((k) => k === "PORT" || /_PORT$/.test(k)))];
     const appPorts = ports.filter((k) => !/^(DB|PG|POSTGRES|POSTGRESQL|DATABASE|REDIS|MYSQL|MONGO|SMTP|MAIL|EMAIL)_/.test(k));
+    const nextStart = typeof pkg.scripts?.start === "string" && /^next start(\s|$)/.test(pkg.scripts.start) && !/\s(-p|--port)\b/.test(pkg.scripts.start);
     if (appPorts.includes("PORT")) facts.push("port variable: PORT (declared in the environment example)");
+    else if (!appPorts.length && nextStart) facts.push("port variable: PORT (`next start` reads it)");
     else if (appPorts.length === 1) {
       layer.app.portEnv = appPorts[0];
       facts.push(`port variable: ${appPorts[0]} (declared in ${dotenv})`);

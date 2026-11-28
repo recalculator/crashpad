@@ -62,14 +62,17 @@ The merged result is validated with zod. A discovery gap tagged with a setting k
 | `engines/env.ts` | Environment contracts: `.env.example` declarations (never treated as required), or a JSON Schema whose `required` list is enforced, with string coercion. Builds the sanitized test environment: tool variables, committed examples, explicit test values, then generated values. Redacts secrets in logs. |
 | `engines/app.ts` | Exports an exact commit (`git archive`) or a working tree (tracked plus untracked-not-ignored files, symlinks skipped). Runs argv commands without a shell, under deadlines, as a process group, and supports cancellation. `AppProcess` waits for readiness (a 2xx health path, or an open port) or for the process to exit. |
 | `engines/http.ts` | The `crashpad.http.json` schema and the scenario runner: identities with lazy login and their own cookie jar and headers, `{{captures}}`, status/header/JSON/contract expectations, SQL side-effect steps. Permission matrices expand into explicit per-identity steps. |
-| `engines/runtime.ts` | Runtime orchestration. Per side: export the code, install, build, build a template database. Per check: clone the database, start a fresh app process, run, stop, drop. Applies the shared `classifyRuntime` rules. Existing HTTP checks run with their **baseline** definition. Smoke checks are derived from the baseline contract. |
+| `engines/trees.ts` | One exported, installed copy of each version's code per run, shared by the ORM schema export, the runtime checks, and the project's commands. |
+| `engines/drizzle.ts` | Schema compatibility for Drizzle schemas without migrations: `drizzle-kit export` per version, DDL in disposable databases, catalog comparison, and synthetic baseline rows replayed into the candidate schema. |
+| `engines/project-commands.ts` | Baseline-relative classification of the project's own build/typecheck/test commands (`pass`, `broken`, `failing-at-baseline`, `fixed`, `undecided`). They are reported in `projectCommands`, never as findings. |
+| `engines/runtime.ts` | Runtime orchestration. Per side: take the shared code tree, build a template database, then build with a clone of it (the build gets the test environment and a throwaway database URL), then run the project's test commands after the runtime checks. Per check: clone the database, start a fresh app process, run, stop, drop. Applies the shared `classifyRuntime` rules. Existing HTTP checks run with their **baseline** definition. Smoke checks are derived from the baseline contract. |
 
 ## Repair
 
 `repair/loop.ts`:
 
 1. Reproduce with the full suite at the exact commit.
-2. Run the app's test commands once, to learn which ones already fail.
+2. The suite runs the project's own commands on the baseline and the candidate, so commands already failing at the baseline are known (and not required).
 3. Try the deterministic rename fixer (`fix/`). If its patch makes the whole suite pass, the repair is done.
 4. Otherwise run up to N agent attempts in a `Workspace` (`repair/workspace.ts`): a `--shared` clone detached at the commit, with the remote removed. After each attempt:
    - guardrails check and revert protected paths;

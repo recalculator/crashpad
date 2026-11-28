@@ -1,6 +1,6 @@
 import type { Classification } from "../report/types.ts";
 import { cell } from "../report/markdown.ts";
-import { AREA_TITLES, type CoverageStatus, type Finding, type SuiteReport } from "./types.ts";
+import { AREA_TITLES, type CommandClassification, type CoverageStatus, type Finding, type SuiteReport } from "./types.ts";
 
 export const SUITE_COMMENT_MARKER = "<!-- crashpad-report -->";
 
@@ -18,6 +18,14 @@ const LABEL: Record<Classification, string> = {
 };
 
 const ORDER: Classification[] = ["regression", "changed-result", "failed-assertion", "removed", "baseline-failure", "invalid-fixture", "inconclusive", "skipped", "retired", "pass"];
+
+const CMD: Record<CommandClassification, string> = {
+  pass: "✅ passes",
+  broken: "❌ broken by this change",
+  "failing-at-baseline": "⚠️ already failing at the baseline",
+  fixed: "✅ fixed",
+  undecided: "⚠️ not decided",
+};
 
 const COVERAGE: Record<CoverageStatus, string> = {
   complete: "✅ complete",
@@ -43,6 +51,8 @@ export function renderSuiteMarkdown(r: SuiteReport, opts: { title?: string; maxD
   const out: string[] = [];
   out.push(`## ${opts.title ?? "Crashpad check"}`, "");
   out.push(`${icon} **Crashpad: ${r.headline}** (exit ${r.exitCode})`, "");
+  const pc = r.projectCommands;
+  if (pc && (pc.results.length || pc.missing.length)) out.push(`Project commands (the project's own build/typecheck/test scripts, reported separately; they are not Crashpad checks): ${pc.headline}.`, "");
   const baseRef = /^[0-9a-f]{40}$/.test(r.base.ref) ? `\`${r.base.commit.slice(0, 12)}\`` : `\`${r.base.ref}\` (${r.base.commit.slice(0, 12)})`;
   out.push(`Baseline ${baseRef} → candidate ${r.candidate.label}${r.candidate.commit ? ` (${r.candidate.commit.slice(0, 12)})` : ""}. Configuration: ${r.configSources.length ? r.configSources.join(" + ") : "none"}.`, "");
   if (r.problems.length) {
@@ -51,9 +61,25 @@ export function renderSuiteMarkdown(r: SuiteReport, opts: { title?: string; maxD
     out.push("");
   }
   out.push("### Coverage", "", "| Area | Status | What ran | Not covered |", "|---|---|---|---|");
-  for (const c of r.coverage) out.push(`| ${AREA_TITLES[c.area]} | ${COVERAGE[c.status]} | ${cell(c.ran.join("; ")) || "—"} | ${cell(c.missing.join("; ")) || "—"} |`);
+  // One line per item: command output belongs in the details, not in a table cell.
+  const firstLine = (xs: string[]) => xs.map((x) => x.split("\n")[0]!.trim());
+  for (const c of r.coverage) out.push(`| ${AREA_TITLES[c.area]} | ${COVERAGE[c.status]} | ${cell(firstLine(c.ran).join("; ")) || "—"} | ${cell(firstLine(c.missing).join("; ")) || "—"} |`);
   out.push("");
   if (!r.complete) out.push("_Coverage is partial: areas marked partial, not configured, or unavailable were not fully verified. They are not counted as passing._", "");
+  if (pc && (pc.results.length || pc.missing.length)) {
+    out.push("### Project commands", "", "_The project's own scripts, run on both versions. A result here is about the build or the tests; it does not show database, API, permission, or workflow behavior._", "");
+    if (pc.results.length) {
+      out.push("| Command | Result | Baseline | Candidate |", "|---|---|---|---|");
+      for (const c of pc.results) out.push(`| \`${cell(c.command)}\` (${c.role}) | ${CMD[c.classification]} | ${cell(c.baseline.summary)} | ${cell(c.candidate.summary)} |`);
+      out.push("");
+      for (const c of pc.results.filter((x) => x.classification !== "pass" && x.classification !== "fixed")) {
+        out.push(`**\`${cell(c.command)}\`**: ${c.message}`, "");
+        for (const [side, o] of [["candidate", c.candidate], ["baseline", c.baseline]] as const) if (o.output) out.push(`<details><summary>${side}: output (last lines)</summary>`, "", fence(o.output), "</details>", "");
+      }
+    }
+    for (const m of pc.missing) out.push(`- not run: ${m}`);
+    if (pc.missing.length) out.push("");
+  }
   const sorted = [...r.findings].sort((a, b) => ORDER.indexOf(a.classification) - ORDER.indexOf(b.classification));
   const notPass = sorted.filter((f) => f.classification !== "pass");
   if (notPass.length) {

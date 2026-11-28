@@ -1,0 +1,18 @@
+{
+  "name": "drizzle-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "start": "node server.js",
+    "test": "node --test",
+    "db:push": "drizzle-kit push"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10"
+  }
+}

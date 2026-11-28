@@ -24,6 +24,8 @@ export interface RepoOnboarding {
   rulesVersion: number;
   configSources: string[];
   areas: Record<Area, { status: Readiness; found: string[]; missing: string[] }>;
+  /** The project's own build/typecheck/test commands Crashpad will run on both versions (reported separately). */
+  commands: { found: string[]; missing: string[] };
   configError?: string;
 }
 
@@ -50,11 +52,24 @@ export async function onboard(source: Source, projectDir: string, repo: string, 
     if (ok || partialOk) return "partial";
     return miss.length ? "needs input" : "not detected";
   };
-  areas.database = { status: status("database", has("database.migrations") && has("database.checks"), has("database.migrations")), found: d.facts.filter((f) => /migrations|seed|check manifest|PostgreSQL/i.test(f)), missing: missingFor("database") };
+  const ormOnly = !has("database.migrations") && has("orm.schema");
+  areas.database = {
+    status: status("database", has("database.migrations") && has("database.checks"), has("database.migrations") || has("orm.schema")),
+    found: d.facts.filter((f) => /migrations|seed|check manifest|PostgreSQL|ORM schema/i.test(f)),
+    // Schema compatibility is never complete database coverage; say what it leaves out up front.
+    missing: [...missingFor("database"), ...(ormOnly ? ["schema compatibility only: no migration sequence, synthetic sample rows, and the application's queries are not exercised"] : [])],
+  };
   areas.api = { status: status("api", has("api.openapi") && has("app.start"), has("api.openapi")), found: d.facts.filter((f) => /OpenAPI/i.test(f)), missing: [...missingFor("api"), ...(has("api.openapi") && !has("app.start") ? ["runtime contract checks need an application start command (app.start)"] : [])] };
   areas.config = { status: status("config", has("app.start") && has("app.envSchema"), has("app.start")), found: d.facts.filter((f) => /start script|build script|environment (schema|declared)|readiness|package.json|lockfile|port variable|typecheck script|test script/i.test(f)), missing: missingFor("config") };
   for (const a of ["permissions", "workflows"] as const) areas[a] = { status: status(a, has("http.checks") && has("app.start"), false), found: d.facts.filter((f) => /runtime check manifest/i.test(f)), missing: missingFor(a) };
-  return { repo, commit, discoveredAt: new Date().toISOString(), rulesVersion: DISCOVERY_RULES_VERSION, configSources: sources, areas, ...(configError ? { configError } : {}) };
+  const get = (k: string) => k.split(".").reduce<unknown>((o, x) => (o && typeof o === "object" ? (o as Record<string, unknown>)[x] : undefined), raw);
+  const build = get("app.build") as string[] | undefined;
+  const tests = (get("tests") as string[][] | undefined) ?? [];
+  const commands = {
+    found: [...(build ? [`build: ${build.join(" ")}`] : []), ...tests.map((t) => `test: ${t.join(" ")}`)],
+    missing: has("app") ? [...(build ? [] : ['no "build" script']), ...(tests.length ? [] : ['no "test" or "typecheck" script'])] : [],
+  };
+  return { repo, commit, discoveredAt: new Date().toISOString(), rulesVersion: DISCOVERY_RULES_VERSION, configSources: sources, areas, commands, ...(configError ? { configError } : {}) };
 }
 
 export function renderOnboarding(o: RepoOnboarding): string {
@@ -65,6 +80,11 @@ export function renderOnboarding(o: RepoOnboarding): string {
     lines.push(`  ${icon[x.status]} ${AREA_TITLES[a].padEnd(26)} ${x.status}`);
     for (const f of x.found) lines.push(`      found: ${f}`);
     for (const m of x.missing) lines.push(`      missing: ${m}`);
+  }
+  if (o.commands.found.length || o.commands.missing.length) {
+    lines.push("  Project commands (the project's own scripts; run on both versions and reported separately, not as Crashpad checks):");
+    for (const f of o.commands.found) lines.push(`      ${f}`);
+    for (const m of o.commands.missing) lines.push(`      none: ${m}`);
   }
   if (o.configError) lines.push(`  ✗ configuration error: ${o.configError}`);
   const ready = AREAS.filter((a) => o.areas[a].status === "ready").length;
@@ -144,7 +164,7 @@ export async function cmdSetup(v: Values, cwd: string): Promise<number> {
   out(claude.ready ? `✓ ${claude.message}: repairs can use your Claude Code (only when you request one or enable a repair policy)` : `○ Claude Code: ${claude.message}\n    Checks work without it; only Claude repairs are unavailable.`);
 
   const comp = await loadCompanionConfig();
-  const repos: Array<{ label: string; key: string; source: Source; projectDir: string; commit: string | null; settings?: Record<string, unknown> }> = [];
+  const repos: Array<{ label: string; key: string; source: Source; projectDir: string; commit: string | null; local?: boolean; settings?: Record<string, unknown> }> = [];
   if (!comp) out("○ GitHub: not connected. Install the Crashpad GitHub App, then run: crashpad connect --service <url>");
   else {
     const client = new ServiceClient(comp.service, comp.token);
@@ -179,7 +199,9 @@ export async function cmdSetup(v: Values, cwd: string): Promise<number> {
     const root = await repoRoot(path.resolve(cwd, d));
     const { id, key } = await repoIdentity(root);
     const settings = (await loadSettings(key))?.config;
-    repos.push({ label: id, key, source: new FsSource(root), projectDir: ".", commit: null, ...(settings ? { settings } : {}) });
+    // Show the directory that was analyzed; settings are shared by every clone of the same origin.
+    const origin = await gitOut(root, ["config", "--get", "remote.origin.url"]).catch(() => "");
+    repos.push({ label: id.startsWith("local:") || !origin ? root : `${root} (settings shared with origin ${origin.trim()})`, key, source: new FsSource(root), projectDir: ".", commit: null, local: true, ...(settings ? { settings } : {}) });
   }
   if (!repos.length) {
     out("\nNo repositories to discover yet (connect GitHub, or pass --repo-dir <path>).");
@@ -192,6 +214,6 @@ export async function cmdSetup(v: Values, cwd: string): Promise<number> {
     await fs.writeFile(path.join(repoDir(r.key), "onboarding.json"), JSON.stringify(o, null, 2) + "\n", { mode: 0o600 });
     out(renderOnboarding(o) + "\n");
   }
-  out("Provide missing values without touching the repository: crashpad settings --repo owner/name --set app.env.NAME=test-value");
+  out(`Provide missing values without touching the repository: ${repos.some((r) => r.local) ? "inside a local repository, crashpad settings --set app.env.NAME=test-value" : ""}${repos.some((r) => r.local) && repos.some((r) => !r.local) ? "; for an App repository, " : ""}${repos.some((r) => !r.local) ? "crashpad settings --repo owner/name --set app.env.NAME=test-value" : ""}`);
   return 0;
 }

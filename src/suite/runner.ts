@@ -9,9 +9,14 @@ import { VERSION } from "../version.ts";
 import { loadEnvSchema, type EnvSchemaLoad } from "../engines/env.ts";
 import { loadHttpManifest, type HttpManifest } from "../engines/http.ts";
 import { diffSpecs, loadSpec, type LoadedSpec, type SpecLoad } from "../engines/openapi.ts";
-import { mkFinding, runRuntime, type RuntimeSide } from "../engines/runtime.ts";
+import { mkFinding, runRuntime, sideEnv, type RuntimeSide } from "../engines/runtime.ts";
+import { runSchemaCompat, type SchemaCompatResult } from "../engines/drizzle.ts";
+import { runCommand } from "../engines/app.ts";
+import { commandResult, commandSide, commandsHeadline } from "../engines/project-commands.ts";
+import { CodeTrees } from "../engines/trees.ts";
+import { AppConfigSchema } from "./config.ts";
 import { mergeLayers, parseEffective, readConfigFileLayer, type ConfigLayer, type SuiteConfig } from "./config.ts";
-import { AREAS, emptySummary, suiteExitCode, SUITE_REPORT_SCHEMA, type Area, type AreaCoverage, type Finding, type SuiteReport } from "./types.ts";
+import { AREAS, emptySummary, suiteExitCode, SUITE_REPORT_SCHEMA, type Area, type AreaCoverage, type Finding, type ProjectCommandResult, type SuiteReport } from "./types.ts";
 
 export interface Discovery {
   /** Discovered configuration (raw; parsed together with the other layers). */
@@ -238,6 +243,14 @@ function coverageOf(area: Area, ran: string[], missing: string[], unavailable: s
 
 function headline(r: SuiteReport): string {
   if (r.problems.length) return `Could not complete: ${r.problems[0]!.message}`;
+  const broken = r.projectCommands.results.filter((c) => c.classification === "broken");
+  if (broken.length) return `${broken.length} project command(s) broken by this change (${broken.map((c) => `\`${c.command}\``).join(", ")}); Crashpad checks: ${checksHeadline(r)}`;
+  return checksHeadline(r);
+}
+
+const AREA_SHORT: Record<Area, string> = { database: "database", api: "API", config: "config/startup", permissions: "permissions", workflows: "workflows" };
+
+function checksHeadline(r: SuiteReport): string {
   const s = r.summary;
   const bad = s.regression + s["changed-result"] + s["failed-assertion"] + s.removed;
   const partial = r.complete ? "" : " (partial coverage; see Coverage)";
@@ -245,10 +258,22 @@ function headline(r: SuiteReport): string {
   const undecided = s["baseline-failure"] + s["invalid-fixture"] + s.inconclusive + s.skipped;
   if (undecided) return `${undecided} check(s) could not be decided${partial}`;
   if (!s.pass) return "Nothing was verified: no applicable checks ran";
-  return `All ${s.pass} check(s) passed${partial}`;
+  // Say where the passes come from, so a large count in one area is not read as broad coverage.
+  const by = AREAS.map((a) => [a, r.findings.filter((f) => f.area === a && f.classification === "pass").length] as const).filter(([, n]) => n > 0);
+  const where = by.length > 1 || r.findings.some((f) => f.kind === "schema") ? ` (${by.map(([a, n]) => `${a === "database" && r.findings.some((f) => f.kind === "schema") ? "database schema compatibility" : AREA_SHORT[a]} ${n}`).join(", ")})` : "";
+  return `All ${s.pass} check(s) passed${where}${partial}`;
 }
 
 export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
+  const trees = new CodeTrees({ ...(input.keepResources ? { keep: true } : {}), ...(input.signal ? { signal: input.signal } : {}), ...(input.log ? { log: input.log } : {}) });
+  try {
+    return await suite(input, trees);
+  } finally {
+    await trees.dispose();
+  }
+}
+
+async function suite(input: SuiteInput, trees: CodeTrees): Promise<SuiteResult> {
   const started = Date.now();
   const log = input.log ?? (() => {});
   const deadline = started + (input.deadlineMs ?? 30 * 60_000);
@@ -262,7 +287,10 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
   let base: Resolved | null = null;
   let cand: Resolved | null = null;
   let dbResult: RunResult | null = null;
+  let orm: SchemaCompatResult | null = null;
   let server: PgServer | null = null;
+  const commands: ProjectCommandResult[] = [];
+  const commandsMissing: string[] = [];
 
   const finish = (): SuiteResult => {
     const coverage = AREAS.map((a) => coverageOf(a, ran[a], missing[a], unavailable[a], applicable.has(a)));
@@ -271,7 +299,8 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
       summary[f.classification]++;
       summary.total++;
     }
-    const exitCode = suiteExitCode({ problems, findings, coverage });
+    const projectCommands = { headline: commandsHeadline(commands), results: commands, missing: commandsMissing };
+    const exitCode = suiteExitCode({ problems, findings, coverage, projectCommands });
     const report: SuiteReport = {
       schemaVersion: SUITE_REPORT_SCHEMA,
       tool: { name: "crashpad", version: VERSION },
@@ -290,6 +319,7 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
       findings,
       summary,
       ...(dbResult ? { database: dbResult.report } : {}),
+      projectCommands,
     };
     report.headline = headline(report);
     return { report, database: dbResult, baseConfig: base?.config ?? null, candidateConfig: cand?.config ?? null };
@@ -349,6 +379,35 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
     }
   }
 
+  // ---- 1b. Schema compatibility from ORM definitions (no committed migrations).
+  if (!(bc.database || cc.database) && cc.orm) {
+    applicable.add("database");
+    const schemaPath = projectPath(input.projectDir, cc.orm.schema, "orm.schema");
+    if (!bc.orm || bc.orm.schema !== cc.orm.schema) {
+      missing.database.push(`the baseline has no ORM schema at ${schemaPath}; schema compatibility needs it on both versions`);
+    } else {
+      server ??= new PgServer(input.databaseUrl);
+      const app = (c: SuiteConfig) => c.app ?? AppConfigSchema.parse({});
+      orm = await runSchemaCompat({
+        server,
+        schemaPath,
+        schemaRel: cc.orm.schema,
+        base: await trees.get("baseline", { root: input.repoRoot, commit: input.base.commit }, input.projectDir, app(bc)),
+        cand: await trees.get("candidate", input.candidate.code, input.projectDir, app(cc)),
+        timeoutMs: cc.orm.exportTimeoutMs,
+        ...(input.keepResources ? { keep: true } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        log,
+      });
+      findings.push(...orm.findings);
+      ran.database.push(...orm.ran);
+      missing.database.push(...orm.missing);
+      unavailable.database.push(...orm.unavailable);
+    }
+  } else if ((bc.database || cc.database) && cc.orm) {
+    ran.database.push("SQL migrations are configured, so they are tested and the ORM schema setting is not used");
+  }
+
   // ---- 2. API contracts (static part)
   const baseSpecPath = bc.api?.openapi;
   const candSpecPath = cc.api?.openapi ?? baseSpecPath;
@@ -373,6 +432,13 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
       missing.config.push("the baseline has no application start configuration; runtime checks need one on both versions");
     } else {
       const dbScripts = async (side: "base" | "candidate"): Promise<{ scripts: RuntimeSide["dbScripts"]; unavailable?: string }> => {
+        if (orm) {
+          const sql = side === "base" ? orm.ddl.base : orm.ddl.cand;
+          const label = `${cc.orm!.schema} (exported by drizzle-kit)`;
+          if (!sql) return { scripts: [], unavailable: side === "candidate" && orm.ddl.candFailed ? "the candidate schema could not be built (see the database area)" : "the schema could not be exported (see the database area)" };
+          if (side === "candidate" && orm.ddl.candFailed) return { scripts: [], unavailable: "the candidate schema could not be built (see the database area)" };
+          return { scripts: [{ path: label, sql }] };
+        }
         if (!dbResult?.baseProject || !dbResult.migrations) return { scripts: (side === "base" ? bc : cc).database ? [] : null, ...((side === "base" ? bc : cc).database ? { unavailable: "the database could not be built (see the database area)" } : {}) };
         const p = dbResult.baseProject;
         const schemaSql = p.paths.schema ? ((await input.base.source.readFile(p.paths.schema)) ?? "") : "";
@@ -404,7 +470,7 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
             http: await httpOf(which === "base" ? input.base.source : expectations, c),
           };
         };
-        if ((bc.database || cc.database) && !server) server = new PgServer(input.databaseUrl);
+        if ((bc.database || cc.database || orm) && !server) server = new PgServer(input.databaseUrl);
         const rt = await runRuntime({
           base: await mk("base"),
           candidate: await mk("candidate"),
@@ -416,7 +482,10 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
           ...(input.signal ? { signal: input.signal } : {}),
           log,
           ...(input.keepResources ? { keep: true } : {}),
+          trees,
+          tests: cc.tests ?? [],
         });
+        commands.push(...rt.commands);
         findings.push(...rt.findings);
         for (const a of AREAS) {
           ran[a].push(...(rt.ran[a] ?? []));
@@ -433,6 +502,31 @@ export async function runSuite(input: SuiteInput): Promise<SuiteResult> {
   } else {
     if (!missing.config.length) missing.config.push("no application start command configured or discovered; startup, runtime API, permission, and workflow checks need one");
     if (cc.http) missing.permissions.push("permission scenarios are configured but there is no application start command to run them");
+    // Without a start command the project's own build and tests still run (no database is provided).
+    if (cc.app && (cc.app.build || cc.tests?.length)) {
+      const sides = [
+        { which: "baseline" as const, code: { root: input.repoRoot, commit: input.base.commit }, c: bc, src: input.base.source },
+        { which: "candidate" as const, code: input.candidate.code, c: cc, src: input.candidate.source },
+      ];
+      const runs = [];
+      for (const sd of sides) {
+        const app = sd.c.app ?? cc.app;
+        const tree = await trees.get(sd.which, sd.code, input.projectDir, app);
+        const envSchema = app.envSchema ? await loadEnvSchema(sd.src, { ...app.envSchema, path: projectPath(input.projectDir, app.envSchema.path, "app.envSchema.path") }) : null;
+        const env = sideEnv({ app, envSchema }, { CI: "1" }).env;
+        if (!tree.problem && app.build && !tree.build) tree.build = await runCommand(app.build, { cwd: tree.appDir, env, timeoutMs: app.installTimeoutMs, ...(input.signal ? { signal: input.signal } : {}) });
+        const tests = [];
+        for (const t of cc.tests ?? []) tests.push(tree.problem ? null : await runCommand(t, { cwd: tree.appDir, env, timeoutMs: 600_000, ...(input.signal ? { signal: input.signal } : {}) }));
+        runs.push({ tree, tests });
+      }
+      const [b, c] = runs as [(typeof runs)[0], (typeof runs)[0]];
+      if (cc.app.build) commands.push(commandResult(cc.app.build, "build", commandSide(b.tree.build, b.tree.problem ?? "not run"), commandSide(c.tree.build, c.tree.problem ?? "not run")));
+      (cc.tests ?? []).forEach((t, i) => commands.push(commandResult(t, "test", commandSide(b.tests[i], b.tree.problem ?? "not run"), commandSide(c.tests[i], c.tree.problem ?? "not run"))));
+    }
+  }
+  if (cc.app) {
+    if (!cc.app.build) commandsMissing.push("no build command (package.json has no \"build\" script)");
+    if (!cc.tests?.length) commandsMissing.push("no test or typecheck command (package.json has no \"test\" or \"typecheck\" script, and none is configured as tests)");
   }
   return finish();
 }

@@ -44,7 +44,7 @@ Every check has a deadline, names the file or operation involved, and records ev
 
 | Area | What Crashpad checks | How |
 |---|---|---|
-| **1. Database compatibility** | Read queries, write statements, and integrity assertions. New migrations must apply. Migration history must not be rewritten. Query-only changes are checked too. | Two real PostgreSQL databases: the candidate is a `TEMPLATE` clone of the baseline, with only the new migrations applied. Every check runs in a rolled-back transaction. |
+| **1. Database compatibility** | Read queries, write statements, and integrity assertions. New migrations must apply. Migration history must not be rewritten. Query-only changes are checked too. **Without committed migrations** (a Drizzle schema applied with `drizzle-kit push`): **schema compatibility** between the two versions' schema definitions. | Two real PostgreSQL databases: the candidate is a `TEMPLATE` clone of the baseline, with only the new migrations applied. Every check runs in a rolled-back transaction. For Drizzle without migrations, see [Schema compatibility](#schema-compatibility-drizzle-without-migrations). |
 | **2. API contracts** | **Specification comparison:** removed operations; newly required parameters, request fields, or bodies; incompatible request/response field types; removed response fields and statuses; fields that became optional or nullable. **Runtime contract checks:** status codes, headers, and response bodies, validated against the baseline OpenAPI schema. | The spec comparison is static: two OpenAPI documents, no app running. Runtime checks call the running app. The report always says which one produced a finding. |
 | **3. Configuration and startup** | Startup failures and readiness within a deadline; required variables missing and invalid configured values, where the repository's contract can say so. | Reads the environment contract the repository already has. A JSON Schema's `required` list is enforced. A `.env.example` only *declares* variables: blank entries are often optional, so a missing value is never reported by itself. The startup check decides, and a newly declared variable without a test value is listed in coverage. Starts the app and polls its health endpoint or port. |
 | **4. Permissions** | Unauthenticated access, normal user vs administrator, and user A reading user B's resources. | Scenarios with test identities and sessions. Every expected status is stated explicitly. Crashpad never infers that an endpoint should be private. This is **permission-regression testing, not a security audit.** |
@@ -83,14 +83,42 @@ crashpad check --base main        # candidate = your working tree; or --head <re
 | Exit | Meaning |
 |---|---|
 | **0** | Everything that ran passed. The report still says whether coverage was complete. |
-| **1** | Actionable: a regression, changed result, failed assertion, failed migration, or check removed without being retired. |
+| **1** | Actionable: a regression, changed result, failed assertion, failed migration, check removed without being retired, or a **project command the change broke** (it passed at the baseline). |
 | **2** | Could not decide: configuration problem, baseline failure, infrastructure problem, timeout or limit, rewritten migration history, or **nothing was verified**. |
 
 Reports are written as Markdown and as versioned JSON (`crashpad.suite/v1`, see [`src/suite/types.ts`](src/suite/types.ts)) to `--report-dir`. Each report has:
 
 - a per-area coverage table;
 - every finding, with baseline and candidate outcomes;
-- evidence for each finding, with session tokens, passwords, and URL credentials masked.
+- evidence for each finding, with session tokens, passwords, and URL credentials masked;
+- a separate **Project commands** section.
+
+### Project commands
+
+Crashpad also runs the project's own `build`, `typecheck`, and `test` scripts on both versions. They run with the same sanitized test environment and a throwaway database, because builds such as `next build` import server modules. The results are reported **separately** from the five areas:
+
+- they are not counted as Crashpad checks or as coverage;
+- a build or test result says nothing about database, API, permission, or workflow behavior.
+
+A command that passed at the baseline and fails now exits 1. A command that already failed at the baseline is reported and not blamed on the change. A green build or startup check is never presented as API, permission, workflow, or database verification.
+
+### Schema compatibility (Drizzle without migrations)
+
+Some projects define their schema in Drizzle ORM code and apply it with `drizzle-kit push`, so there is no migration history. For these, discovery reads `schema` and `dialect` from `drizzle.config.*` by inspection; the file is never executed. Only a single file path is used. An array, a glob, or a directory is reported, and you can set `orm.schema` instead. With a schema found, the database area runs **schema compatibility testing**:
+
+1. For each version, the project's own `drizzle-kit export` produces the DDL for an empty database. That DDL runs in a disposable PostgreSQL database. A candidate schema that does not export or does not create is a regression.
+2. Two synthetic sample rows per table, generated from the column types, are written under the **baseline** schema. Parents come before children, and foreign keys point at real parent rows.
+3. Those stored rows are replayed into the **candidate** schema. A row the baseline accepts but the candidate rejects is a regression, with the PostgreSQL error as evidence; a new `NOT NULL` column without a default is the typical case. Tables that reference a rejected table are still tested, against stand-in parent rows.
+4. A dropped table or column, or a removed enum value, is a regression. ORM definitions do not record renames, so a rename looks like a drop. A changed column type that is not a known widening is reported as undecided: synthetic values fitting proves nothing about real ones.
+
+What this is **not**:
+
+- It does not generate or run the statements that would migrate an existing database. `drizzle-kit push` computes those interactively against a live database.
+- It does not verify a migration sequence, and it never uses production data.
+- Data-dependent problems are missed, for example duplicates under a new unique constraint.
+- The application's queries are not exercised.
+
+The coverage table always lists these gaps, so the database area reports **partial**. The runtime checks use the same exported DDL to give the app a real database.
 
 Other options:
 
@@ -106,10 +134,12 @@ Discovery supports **one stack: Node.js / TypeScript applications on PostgreSQL*
 | Package manager | `package-lock.json` / `npm-shrinkwrap.json` → `npm ci`; `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`; `yarn.lock` → `yarn install --frozen-lockfile` (`--immutable` with `.yarnrc.yml`). Bun is reported as unsupported. |
 | Build / start / tests | The `build`, `start`, `typecheck` (or `type-check`, `check-types`, `tsc`), and `test` scripts. npm's placeholder test script is ignored. |
 | Migrations | Prisma (`prisma/migrations/*/migration.sql` with a `postgresql` datasource); Drizzle (`drizzle/` plus `meta/_journal.json`); plain SQL directories (`db/migrations`, `migrations`, `sql/migrations`, `database/migrations`). dbmate up/down files and JS/TS migrations (Knex, node-pg-migrate, TypeORM) are reported as unsupported rather than run incorrectly. If a project uses PostgreSQL but has no migration history (for example `drizzle-kit push` or `prisma db push`), discovery says so. |
+| Drizzle schema (no migrations) | `schema` and `dialect` from `drizzle.config.{ts,js,mjs,json}`, read as text, only when it is a single existing file, the dialect is PostgreSQL, and `drizzle-kit` is a dependency. Enables [schema compatibility](#schema-compatibility-drizzle-without-migrations), and the fact says it is not migration testing. |
 | Schema, seed, checks | A SQL seed (`db/seed.sql`, `seed.sql`, …) and `crashpad.checks.json`. A `schema.sql` is **not** assumed to be a bootstrap schema, because it may already contain the migrations. By default, migrations apply to an empty database. |
 | OpenAPI | `openapi.{yaml,yml,json}` in the project root, `openapi/`, `api/`, `docs/`, or `spec/`. Only OpenAPI 3.0/3.1; Swagger 2 is reported. |
 | Environment contract | `.env.example`, `.env.sample`, `.env.template` (declared variables; not treated as required), or `env.schema.json` (its `required` list is enforced). Crashpad **never reads `.env`** or `.env.local`. |
-| Port variable | `PORT`, or the one `*_PORT` variable the env example declares, including a commented default such as `# APP_PORT=8787`. If there is none, or more than one, Crashpad says it assumes `PORT` and asks for `app.portEnv`. |
+| Port variable | `PORT`, or the one `*_PORT` variable the env example declares, including a commented default such as `# APP_PORT=8787`. `next start` without `-p` reads `PORT`. If there is none, or more than one, Crashpad says it assumes `PORT` and asks for `app.portEnv`. |
+| Database URL | The database URL variable's committed example value is **never** used: the app, the build, and the tests only ever get Crashpad's throwaway database. |
 | Readiness | A `GET` health path (`/health`, `/healthz`, `/ready`, …) declared in the OpenAPI document. Otherwise readiness means the port accepts connections, and the report says so. |
 | Runtime scenarios | `crashpad.http.json`. Permission and workflow expectations can't be discovered, so without this file those areas are reported as not configured. |
 
@@ -304,7 +334,7 @@ The composite action ([`action.yml`](action.yml)) runs `crashpad check` in a wor
 - **No query discovery.** Only configured SQL fixtures are checked. Permission and workflow expectations must be written down: they come from explicit scenarios, never from inference. Business rules are only checked through the assertions you write.
 - **Spec comparison** covers the rules listed above. `oneOf`/`anyOf` and response enum changes are not compared.
 - **Runtime checks** assume an HTTP server that reads its port from an environment variable (`PORT`, a discovered `*_PORT`, or `app.portEnv`).
-- **App tests during repair** run without a database.
+- **Schema compatibility** (Drizzle without migrations) compares schema definitions using synthetic rows. It is not migration testing; see its section above. Only Drizzle is supported this way, not `prisma db push`.
 - **No performance, locking, or downtime analysis, and no security audit.**
 - **The companion must be running** for App-driven checks.
 - **The service is a single process with file-based state.** It is not a hosted multi-tenant system.
@@ -316,7 +346,7 @@ The composite action ([`action.yml`](action.yml)) runs `crashpad check` in a wor
 |---|---|---|
 | All five check areas | Real PostgreSQL 16, real Git, real app processes (the `notes-api` fixture), with failures reproduced in each area | — |
 | Discovery and onboarding | Real repositories, no Crashpad config file; packaged CLI's `discover` and `settings` | — |
-| **Real-project trial** | **Willo** (the owner's Hono/TypeScript app), using the packaged CLI with no Crashpad file in the repository. Discovery, startup, and env checks ran; a real regression was caught; a **live Claude repair was verified** (after fixing four onboarding defects the trial found). Only the configuration/startup area applied there. | — |
+| **Real-project trials** | **Willo** (the owner's Hono/TypeScript app): configuration/startup only; a regression was caught and a **live Claude repair was verified**. **autofounder** (the owner's Next.js + Drizzle `push` app): **database schema compatibility**, startup with a real throwaway database, and the project's `next build` ran; a NOT NULL-column regression that the build, `tsc`, and lint all miss was caught, and a **live Claude repair was verified**. Both used the packaged CLI with no Crashpad file in the repository. API, permission, and workflow areas did not apply to either (no OpenAPI document, no scenarios). See [validation](docs/validation.md). | — |
 | Packaging | `npm pack` archive installed in a clean directory outside the checkout, then a real discovered `check` | — |
 | Deterministic repair | Real checks and verification | — |
 | **Claude Code repair** | **Live on this machine:** Claude Code 2.1.332 with a Pro subscription sign-in repaired a permission regression in 1 attempt (7 turns), verified by Crashpad with all 22 checks and the app tests passing | Rejection of incorrect patches, "success without a fix", guardrail violations, expired sign-in, usage exhaustion, limits, and cancellation use a **mock Claude CLI** |
@@ -341,6 +371,6 @@ npm run typecheck && npm test
 | `src/discovery/` | Node/PostgreSQL discovery rules and Crashpad's storage |
 | `src/repair/` | Repair loop, guardrails, workspace, Claude Code adapter |
 | `src/service/`, `src/companion/` | GitHub App service and local companion |
-| `test/fixtures/` | `notes-api` (runtime fixture, no Crashpad config), `storefront` (database fixture), scenarios, mock Claude CLI |
+| `test/fixtures/` | `notes-api` (runtime fixture, no Crashpad config), `storefront` (database fixture), `drizzle-app` (Drizzle push project), scenarios, mock Claude CLI |
 
 MIT licensed. Reused open-source components and their licenses: [docs/third-party.md](docs/third-party.md).

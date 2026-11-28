@@ -204,9 +204,25 @@ describe("discovery rules (Node.js / PostgreSQL)", () => {
 
   it("explains Postgres projects without migration history and finds the port variable (real-project trial)", async () => {
     // Shaped like the trial's Next.js + Drizzle project, whose schema is applied with drizzle-kit push.
-    const drizzle = await project({ "package.json": JSON.stringify({ scripts: { start: "next start", "db:push": "drizzle-kit push" }, dependencies: { postgres: "3", "drizzle-orm": "0" } }), "drizzle.config.ts": "export default {}", ".env.example": "DATABASE_URL=\nPORT=3000\n" });
+    const drizzleConfig = 'import { defineConfig } from "drizzle-kit";\nexport default defineConfig({\n  schema: "./src/db/schema.ts",\n  out: "./drizzle",\n  dialect: "postgresql",\n  dbCredentials: { url: process.env.DATABASE_URL! },\n});\n';
+    const drizzlePkg = JSON.stringify({ scripts: { start: "next start", "db:push": "drizzle-kit push" }, dependencies: { postgres: "3", "drizzle-orm": "0" }, devDependencies: { "drizzle-kit": "0" } });
+    const drizzle = await project({ "package.json": drizzlePkg, "drizzle.config.ts": drizzleConfig, "src/db/schema.ts": "export {}", ".env.example": "DATABASE_URL=\nPORT=3000\n" });
     expect(drizzle.layer.database).toBeUndefined();
-    expect(msgs(drizzle)).toMatch(/drizzle.config.ts is present but no generated Drizzle migrations[\s\S]*drizzle-kit generate/);
+    // No migration history: the schema module is used for schema compatibility, and the fact says so.
+    expect(drizzle.layer.orm).toEqual({ kind: "drizzle", schema: "src/db/schema.ts" });
+    expect(drizzle.facts.join("\n")).toMatch(/Drizzle ORM schema: src\/db\/schema.ts \(from drizzle.config.ts\)[\s\S]*SCHEMA COMPATIBILITY[\s\S]*not a migration sequence/);
+    expect(msgs(drizzle)).not.toMatch(/database:/);
+    // Shapes Crashpad does not read are reported, never guessed.
+    const glob = await project({ "package.json": drizzlePkg, "drizzle.config.ts": drizzleConfig.replace("./src/db/schema.ts", "./src/db/*.ts") });
+    expect(glob.missing.find((m) => m.key === "orm.schema")?.message).toMatch(/is a glob/);
+    const arr = await project({ "package.json": drizzlePkg, "drizzle.config.ts": 'export default { schema: ["./a.ts", "./b.ts"], dialect: "postgresql" }' });
+    expect(arr.missing.find((m) => m.key === "orm.schema")?.message).toMatch(/it is an array/);
+    const dirSchema = await project({ "package.json": drizzlePkg, "drizzle.config.ts": drizzleConfig.replace("./src/db/schema.ts", "./src/db"), "src/db/a.ts": "" });
+    expect(dirSchema.missing.find((m) => m.key === "orm.schema")?.message).toMatch(/not a file/);
+    const noKit = await project({ "package.json": JSON.stringify({ dependencies: { "drizzle-orm": "0" } }), "drizzle.config.ts": drizzleConfig, "src/db/schema.ts": "" });
+    expect(noKit.missing.find((m) => m.key === "orm.schema")?.message).toMatch(/drizzle-kit is not a dependency/);
+    const mysql = await project({ "package.json": drizzlePkg, "drizzle.config.ts": drizzleConfig.replace("postgresql", "mysql"), "src/db/schema.ts": "" });
+    expect(msgs(mysql)).toMatch(/uses dialect mysql; only PostgreSQL/);
     expect(drizzle.facts).toContain("port variable: PORT (declared in the environment example)");
     expect(msgs(drizzle)).toContain("no health endpoint is known (there is no OpenAPI document)");
     // Shaped like the trial's Hono app: the port variable is only a commented default.
@@ -228,5 +244,43 @@ describe("discovery rules (Node.js / PostgreSQL)", () => {
     expect(msgs(noPkg)).toMatch(/no package.json[\s\S]*did not use it as the bootstrap schema/);
     expect(noPkg.layer.database).toMatchObject({ migrations: "migrations" });
     expect((await project({ "package.json": "{}", "prisma/schema.prisma": 'datasource db {\n provider = "mysql"\n}', "prisma/migrations/1_x/migration.sql": "" })).missing.some((m) => /only PostgreSQL/.test(m.message))).toBe(true);
+  });
+});
+
+describe("onboarding rules from the second real-project trial (Next.js + Drizzle push)", () => {
+  it("never takes the database URL from a committed example, for any command", () => {
+    const schema: EnvSchema = { path: ".env.example", format: "dotenv-example", required: [], declared: [], examples: { DATABASE_URL: "postgresql://u:p@db.example.com/app", ANTHROPIC_API_KEY: "sk-ant-..." } };
+    const { env } = buildTestEnv({ schema, useExampleValues: true, explicit: {}, generated: { CI: "1" }, neverFromExamples: ["DATABASE_URL"] });
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-...");
+    // Crashpad's throwaway database still wins when there is one.
+    expect(buildTestEnv({ schema, useExampleValues: true, explicit: {}, generated: { DATABASE_URL: "postgres://localhost/crashpad_x" }, neverFromExamples: ["DATABASE_URL"] }).env.DATABASE_URL).toBe("postgres://localhost/crashpad_x");
+  });
+
+  it("classifies the project's own commands relative to the baseline", async () => {
+    const { classifyCommand } = await import("../../src/engines/project-commands.ts");
+    const pass = { status: "pass" as const, summary: "passed", exitCode: 0 };
+    const fail = { status: "fail" as const, summary: "failed (exit 1)", exitCode: 1 };
+    const notRun = { status: "not-run" as const, summary: "install failed", exitCode: null };
+    expect(classifyCommand(pass, pass).classification).toBe("pass");
+    expect(classifyCommand(pass, fail).classification).toBe("broken");
+    expect(classifyCommand(fail, fail).classification).toBe("failing-at-baseline");
+    expect(classifyCommand(fail, pass).classification).toBe("fixed");
+    expect(classifyCommand(notRun, fail).classification).toBe("undecided");
+    expect(classifyCommand(pass, notRun).classification).toBe("undecided");
+    // Only a command the change broke is actionable, and it never counts as a Crashpad check.
+    const report = { problems: [], findings: [], coverage: [] };
+    const cmd = (classification: "broken" | "failing-at-baseline") => ({ headline: "", missing: [], results: [{ command: "npm run build", role: "build" as const, classification, message: "", baseline: pass, candidate: fail }] });
+    expect(suiteExitCode({ ...report, projectCommands: cmd("broken") })).toBe(1);
+    expect(suiteExitCode({ ...report, projectCommands: cmd("failing-at-baseline") })).toBe(2);
+  });
+
+  it("knows that `next start` reads PORT", async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { start: "next start", build: "next build" } }));
+    fs.writeFileSync(path.join(dir, ".env.example"), "ANTHROPIC_API_KEY=sk-ant-...\n");
+    const d = await discoverNode(new FsSource(dir), ".");
+    expect(d.facts).toContain("port variable: PORT (`next start` reads it)");
+    expect(d.missing.some((m) => m.key === "app.portEnv")).toBe(false);
   });
 });

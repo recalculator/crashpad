@@ -95,6 +95,46 @@ export interface SuiteReport {
   summary: Record<Classification, number> & { total: number };
   /** Full database-engine report, when the database area ran. */
   database?: Report;
+  /**
+   * The project's OWN build, typecheck, and test commands, run on both versions.
+   * Reported separately: they are not Crashpad checks, are not counted in
+   * `findings`/`summary`/`coverage`, and say nothing about the five areas.
+   */
+  projectCommands: ProjectCommands;
+}
+
+export interface CommandSide {
+  status: "pass" | "fail" | "not-run";
+  summary: string;
+  exitCode: number | null;
+  durationMs?: number;
+  /** Last lines of output (failures only). */
+  output?: string;
+}
+
+/**
+ * - pass: passes on both versions (or passes now and was not run at the baseline)
+ * - broken: passed at the baseline, fails now (actionable: exit 1)
+ * - failing-at-baseline: fails on both versions; not blamed on the change
+ * - fixed: failed at the baseline, passes now
+ * - undecided: could not be run on the candidate, or failed now and could not be run at the baseline
+ */
+export type CommandClassification = "pass" | "broken" | "failing-at-baseline" | "fixed" | "undecided";
+
+export interface ProjectCommandResult {
+  command: string;
+  role: "build" | "test";
+  classification: CommandClassification;
+  message: string;
+  baseline: CommandSide;
+  candidate: CommandSide;
+}
+
+export interface ProjectCommands {
+  headline: string;
+  results: ProjectCommandResult[];
+  /** Commands the project does not have (or that could not be discovered). */
+  missing: string[];
 }
 
 export function emptySummary(): SuiteReport["summary"] {
@@ -115,13 +155,16 @@ export function emptySummary(): SuiteReport["summary"] {
 
 /**
  * Exit code precedence, the same for every area:
- * problems → 2; any actionable finding → 1; anything undecided → 2;
+ * problems → 2; a project command broken by the change → 1; any actionable finding → 1; anything undecided → 2;
  * no finding passed at all (nothing verified) → 2; otherwise 0. Partial coverage alone does not
  * fail a run, but the report says it is partial.
  */
-export function suiteExitCode(r: Pick<SuiteReport, "problems" | "findings" | "coverage">, extra: { blockingHistory?: boolean; failedMigration?: boolean } = {}): 0 | 1 | 2 {
+export function suiteExitCode(r: Pick<SuiteReport, "problems" | "findings" | "coverage"> & { projectCommands?: ProjectCommands }, extra: { blockingHistory?: boolean; failedMigration?: boolean } = {}): 0 | 1 | 2 {
   if (r.problems.length) return 2;
   if (extra.failedMigration) return 1;
+  // A project command the change broke is actionable, but it is reported as the
+  // project's own result, never as one of Crashpad's checks.
+  if (r.projectCommands?.results.some((c) => c.classification === "broken")) return 1;
   if (r.findings.some((f) => ACTIONABLE.has(f.classification))) return 1;
   if (r.findings.some((f) => UNDECIDED.has(f.classification))) return 2;
   if (extra.blockingHistory) return 2;
